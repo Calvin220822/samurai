@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Local temp / uploads not part of source tree
+.uploads/
+tmp/
