@@ -1,12 +1,9 @@
 import Phaser from 'phaser';
 import {
-  PLAYER_ACCENT,
   PLAYER_ATTACK_COOLDOWN_MS,
   PLAYER_ATTACK_HIT_FRAME,
-  PLAYER_COLOR,
   PLAYER_RADIUS,
   PLAYER_SPEED,
-  PLAYER_SWORD_COLOR,
   SKILL_R_CAST_MS,
 } from '../config/Constants.js';
 import { EVT, EventBus } from '../core/EventBus.js';
@@ -14,20 +11,23 @@ import type { SkillSystem } from '../systems/SkillSystem.js';
 import { useGameStore } from '@/store/gameStore.js';
 
 type PlayerState = 'IDLE' | 'MOVING' | 'ATTACKING' | 'DYING';
+type Dir = 'down' | 'up' | 'side';
+
+/** 技能动作播放期间锁定动画切换，避免被 idle/walk 立刻覆盖 */
+const ANIM_LOCK_MS: Record<string, number> = {
+  attack: 300, q: 300, w: 300, r: SKILL_R_CAST_MS + 80, hit: 220,
+};
 
 /**
- * 武士主角（Phase 2 版本）。
+ * 武士主角（精灵动画版）。
  *
- * Phase 2 新增：
- * - W 键触发旋风斩 / E 键触发影步
- * - 无敌帧（影步期间），敌人攻击期间玩家若处于 invuln 可规避伤害
- * - 受伤时短暂红闪
- * - 普攻伤害从 store.getEffectiveAtk() 动态取
+ * 素材：武士行走与待机精灵表 + 妖刀武士动作精灵表。
+ * 键位：WASD/方向键移动，空格普攻，Q 居合斩 / W 旋风斩 / E 影步 / R 鬼神斩。
  */
 export class Player extends Phaser.GameObjects.Container {
-  private bodyGfx!: Phaser.GameObjects.Graphics;
-  private swordGfx!: Phaser.GameObjects.Graphics;
+  private sprite!: Phaser.GameObjects.Sprite;
   private facing: 'left' | 'right' = 'right';
+  private dir: Dir = 'down';
 
   private playerState: PlayerState = 'IDLE';
   private attackCombo = 0;
@@ -36,10 +36,10 @@ export class Player extends Phaser.GameObjects.Container {
   private attackCd = 0;
   private comboReset = 0;
 
-  private invulnUntil = 0;             // 毫秒时间戳，期间免疫伤害
+  private invulnUntil = 0;
   private hurtFlashUntil = 0;
-  private rChargingUntil = 0;           // Phase 3：鬼神斩蓄力期间禁止移动
-  private rChargingSwordFlashOn = false;
+  private rChargingUntil = 0;
+  private actionLockUntil = 0;
 
   private kbd!: {
     up: Phaser.Input.Keyboard.Key; down: Phaser.Input.Keyboard.Key;
@@ -66,13 +66,12 @@ export class Player extends Phaser.GameObjects.Container {
     body.setCollideWorldBounds(true);
 
     this.kbd = this.registerInput(scene);
-    this.createGraphics();
+    this.createSprite();
     EventBus.emit(EVT.PLAYER_SPAWNED, this);
   }
 
   private registerInput(scene: Phaser.Scene) {
     const kb = scene.input.keyboard!;
-    // WASD / 方向键移动；Q 居合斩 / W 旋风斩 / E 影步 / R 鬼神斩
     return {
       up: kb.addKey('W'), down: kb.addKey('S'),
       left: kb.addKey('A'), right: kb.addKey('D'),
@@ -84,49 +83,19 @@ export class Player extends Phaser.GameObjects.Container {
     };
   }
 
-  // 删除错误的 registerKeyExtras —— 用正确的键位即可
-
-  private createGraphics(): void {
-    this.bodyGfx = this.scene.add.graphics();
-    this.bodyGfx.fillStyle(PLAYER_COLOR, 1);
-    this.bodyGfx.fillRoundedRect(-14, -22, 28, 44, 6);
-    this.bodyGfx.fillStyle(PLAYER_ACCENT, 1);
-    this.bodyGfx.fillTriangle(-14, -22, 14, -22, 0, -36);
-    this.bodyGfx.fillStyle(0x888888, 1);
-    this.bodyGfx.fillRoundedRect(-16, -24, 32, 4, 2);
-    this.add(this.bodyGfx);
-
-    this.swordGfx = this.scene.add.graphics();
-    this.drawSword(false);
-    this.add(this.swordGfx);
-  }
-
-  private drawSword(swinging: boolean): void {
-    this.swordGfx.clear();
-    const chargeFlash = this.rChargingSwordFlashOn;
-    const color = chargeFlash ? Phaser.Display.Color.ValueToColor(0xff3333).color : PLAYER_SWORD_COLOR;
-    this.swordGfx.lineStyle(chargeFlash ? 5 : 3, color, 1);
-    if (swinging) {
-      this.swordGfx.lineBetween(0, -4, 36, -24);
-      this.swordGfx.lineBetween(0, -4, 36, 4);
-      this.swordGfx.fillStyle(chargeFlash ? 0xff6666 : 0xffffff, 0.35);
-      this.swordGfx.fillTriangle(0, -4, 36, -24, 36, 4);
-    } else {
-      this.swordGfx.lineBetween(10, 2, 26, 0);
-    }
+  private createSprite(): void {
+    this.sprite = this.scene.add.sprite(0, 0, 'player_idle', 0)
+      .setOrigin(0.5, 1)
+      .setScale(0.8);
+    this.add(this.sprite);
+    this.playAction('idle', true);
   }
 
   /** 每帧 */
   update(timeMs: number, deltaMs: number): void {
-    // —— 受伤红闪 ——
-    this.bodyGfx.clear();
-    const flash = timeMs < this.hurtFlashUntil;
-    this.bodyGfx.fillStyle(flash ? 0xffaaaa : PLAYER_COLOR, 1);
-    this.bodyGfx.fillRoundedRect(-14, -22, 28, 44, 6);
-    this.bodyGfx.fillStyle(PLAYER_ACCENT, 1);
-    this.bodyGfx.fillTriangle(-14, -22, 14, -22, 0, -36);
-    this.bodyGfx.fillStyle(0x888888, 1);
-    this.bodyGfx.fillRoundedRect(-16, -24, 32, 4, 2);
+    // 受伤红闪
+    if (timeMs < this.hurtFlashUntil) this.sprite.setTint(0xff8888);
+    else this.sprite.clearTint();
 
     if (this.playerState !== 'DYING') {
       this.handleSkills();
@@ -143,32 +112,41 @@ export class Player extends Phaser.GameObjects.Container {
     if (useGameStore.getState().player.hp <= 0 && this.playerState !== 'DYING') this.die();
   }
 
-  /** 技能键 Q / W / E / R 触发四种技能 */
+  /** 技能键 Q / W / E / R */
   private handleSkills(): void {
     const now = this.scene.time.now;
     if (Phaser.Input.Keyboard.JustDown(this.kbd.skillQ)) {
-      this.skills.castQ(this);
-      if (this.playerState === 'ATTACKING') this.playerState = 'MOVING';
+      if (this.skills.castQ(this)) {
+        this.playAction('q', true);
+        this.actionLockUntil = now + ANIM_LOCK_MS.q;
+        if (this.playerState === 'ATTACKING') this.playerState = 'MOVING';
+      }
     }
     if (Phaser.Input.Keyboard.JustDown(this.kbd.skillW)) {
-      this.skills.castW(this);
+      if (this.skills.castW(this)) {
+        this.playAction('w', true);
+        this.actionLockUntil = now + ANIM_LOCK_MS.w;
+      }
     }
     if (Phaser.Input.Keyboard.JustDown(this.kbd.skillE)) {
       const mv = this.currentMoveDirection();
-      // castE 返回本次无敌时长（>0 表示释放成功）
       const invulnMs = this.skills.castE(this, mv);
-      if (invulnMs > 0) this.invulnUntil = now + invulnMs;
+      if (invulnMs > 0) {
+        this.invulnUntil = now + invulnMs;
+        // 影步：半透明残影
+        this.sprite.setAlpha(0.45);
+        this.scene.time.delayedCall(invulnMs, () => this.sprite.setAlpha(1));
+      }
     }
     if (Phaser.Input.Keyboard.JustDown(this.kbd.skillR)) {
       if (this.skills.castR(this)) {
         this.rChargingUntil = now + SKILL_R_CAST_MS;
-        this.rChargingSwordFlashOn = true;
-        this.scene.time.delayedCall(SKILL_R_CAST_MS, () => { this.rChargingSwordFlashOn = false; });
+        this.playAction('r', true);
+        this.actionLockUntil = now + ANIM_LOCK_MS.r;
       }
     }
   }
 
-  /** 当前按键移动方向；用于影步无移动时 fallback 到 facing */
   private currentMoveDirection(): { dx: number; dy: number } {
     const K = this.kbd;
     const left = K.left.isDown || K.leftArrow.isDown;
@@ -193,27 +171,27 @@ export class Player extends Phaser.GameObjects.Container {
     this.attackCombo = (this.attackCombo + 1) % 3;
     this.comboReset = 1200;
     (this.body as Phaser.Physics.Arcade.Body).setVelocity(0, 0);
+    this.playAction('attack', true);
+    this.actionLockUntil = this.scene.time.now + ANIM_LOCK_MS.attack;
   }
 
   private doAttacking(deltaMs: number): void {
     this.attackTimer -= deltaMs;
     if (!this.attackHitFrame && (260 - this.attackTimer) >= PLAYER_ATTACK_HIT_FRAME) {
       this.attackHitFrame = true;
-      this.drawSword(true);
       this.scene.events.emit('player:attack-hit', {
         x: this.x, y: this.y, facing: this.facing,
         damage: useGameStore.getState().getEffectiveAtk(),
       });
     }
     if (this.attackTimer <= 0) {
-      this.drawSword(false);
       this.playerState = 'MOVING';
       this.attackCd = PLAYER_ATTACK_COOLDOWN_MS;
+      this.playAction('walk', true);
     }
   }
 
   private doMoving(): void {
-    // Phase 3：鬼神斩蓄力期间禁止移动
     if (this.scene.time.now < this.rChargingUntil) {
       (this.body as Phaser.Physics.Arcade.Body).setVelocity(0, 0);
       this.playerState = 'IDLE';
@@ -221,15 +199,42 @@ export class Player extends Phaser.GameObjects.Container {
     }
     const mv = this.currentMoveDirection();
     (this.body as Phaser.Physics.Arcade.Body).setVelocity(mv.dx * PLAYER_SPEED, mv.dy * PLAYER_SPEED);
-    if (mv.dx < 0) this.face('left');
-    else if (mv.dx > 0) this.face('right');
-    this.playerState = (mv.dx !== 0 || mv.dy !== 0) ? 'MOVING' : 'IDLE';
+
+    if (mv.dx !== 0 || mv.dy !== 0) {
+      if (Math.abs(mv.dx) >= Math.abs(mv.dy)) {
+        this.dir = 'side';
+        this.face(mv.dx < 0 ? 'left' : 'right');
+      } else {
+        this.dir = mv.dy > 0 ? 'down' : 'up';
+      }
+      this.applyFlip();
+      this.playerState = 'MOVING';
+      this.playAction('walk');
+    } else {
+      this.playerState = 'IDLE';
+      this.playAction('idle');
+    }
   }
 
   private face(dir: 'left' | 'right'): void {
     if (this.facing === dir) return;
     this.facing = dir;
-    this.bodyGfx.setScale(dir === 'right' ? 1 : -1, 1);
+    this.applyFlip();
+  }
+
+  /** side 原画面朝左：向右时水平翻转 */
+  private applyFlip(): void {
+    this.sprite.setFlipX(this.dir === 'side' && this.facing === 'right');
+  }
+
+  private playAction(action: string, force = false): void {
+    const now = this.scene.time.now;
+    if (!force && now < this.actionLockUntil) return;
+    const key = ['w', 'hit', 'death'].includes(action) ? action : `${action}-${this.dir}`;
+    if (!this.scene.anims.exists(key)) return;
+    if (!force && this.sprite.anims.currentAnim?.key === key && this.sprite.anims.isPlaying) return;
+    this.sprite.play(key, true);
+    this.applyFlip();
   }
 
   // —— 公共 API ——
@@ -238,10 +243,12 @@ export class Player extends Phaser.GameObjects.Container {
   getComboIndex(): number { return this.attackCombo; }
   isInvulnerable(time: number): boolean { return time < this.invulnUntil; }
 
-  /** 由 BattleScene 在受伤前调用；返回 true 代表实际扣血 */
+  /** 由场景在受伤前调用；返回 true 代表实际扣血 */
   takeHit(damage: number, time: number): boolean {
-    if (time < this.invulnUntil) return false;  // 影步规避
+    if (time < this.invulnUntil) return false;
     this.hurtFlashUntil = time + 120;
+    this.playAction('hit', true);
+    this.actionLockUntil = time + ANIM_LOCK_MS.hit;
     useGameStore.getState().damagePlayer(damage);
     return true;
   }
@@ -250,8 +257,9 @@ export class Player extends Phaser.GameObjects.Container {
     this.playerState = 'DYING';
     EventBus.emit(EVT.PLAYER_DEAD, this);
     (this.body as Phaser.Physics.Arcade.Body).setVelocity(0, 0);
+    this.sprite.play('death', true);
     this.scene.tweens.add({
-      targets: this, alpha: 0, duration: 800, ease: 'Cubic.Out',
+      targets: this, alpha: 0, duration: 900, delay: 300, ease: 'Cubic.Out',
       onComplete: () => this.destroy(),
     });
   }

@@ -102,6 +102,15 @@
 .go-stat-row { display: flex; justify-content: space-between; font-size: 13px; padding: 3px 0; color: #c8c8d6; }
 .go-stat-row b { color: #fff; }
 
+.go-profile { display: flex; gap: 12px; align-items: flex-start; }
+.go-portrait {
+  height: 190px;
+  width: auto;
+  flex: none;
+  filter: drop-shadow(0 8px 14px rgba(0, 0, 0, 0.65));
+}
+.go-profile-stats { flex: 1; min-width: 0; }
+
 .go-bar { height: 9px; border-radius: 5px; background: #2a2a36; overflow: hidden; margin: 4px 0 8px; }
 .go-bar > i { display: block; height: 100%; border-radius: 5px; }
 .go-bar.hp > i { background: linear-gradient(90deg, #d94a4a, #ff8a5c); }

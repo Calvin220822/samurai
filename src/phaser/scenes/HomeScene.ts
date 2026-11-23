@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import {
-  GAME_WIDTH, GAME_HEIGHT, GRID_COLOR, WALL_COLOR,
+  GAME_WIDTH, GAME_HEIGHT, WALL_COLOR,
 } from '../config/Constants.js';
 import { Player } from '../entities/Player.js';
 import { SkillSystem } from '../systems/SkillSystem.js';
@@ -20,15 +20,16 @@ interface FacilityMarker {
   key: FacilityKey;
   x: number; y: number;
   label: string;
-  color: number;
+  prop: string;
+  scale: number;
   desc: string;
 }
 
 const FACILITIES: FacilityMarker[] = [
-  { key: 'main-hall',   x: 280, y: 260, label: '主屋',   color: 0x8a6a3a, desc: '休整 · 查看状态' },
-  { key: 'swordsmith',  x: 760, y: 240, label: '刀匠铺', color: 0xaa5533, desc: '强化装备' },
-  { key: 'shrine',      x: 520, y: 460, label: '神龛',   color: 0xdd8844, desc: '祈祷 · 消耗妖魂碎片' },
-  { key: 'training',    x: 1020, y: 400, label: '训练场', color: 0x66aa66, desc: '技能升级' },
+  { key: 'main-hall',   x: 300, y: 330, label: '主屋',   prop: 'prop_hut',     scale: 0.95, desc: '休整 · 查看状态' },
+  { key: 'swordsmith',  x: 790, y: 320, label: '刀匠铺', prop: 'prop_shop',    scale: 0.95, desc: '强化装备' },
+  { key: 'shrine',      x: 560, y: 560, label: '神龛',   prop: 'prop_shrine',  scale: 0.9,  desc: '祈祷 · 消耗妖魂碎片' },
+  { key: 'training',    x: 1050, y: 470, label: '训练场', prop: 'prop_torii',   scale: 0.9,  desc: '技能升级' },
 ];
 
 const EXIT_DOOR = { x: GAME_WIDTH - 80, y: GAME_HEIGHT / 2 };
@@ -55,12 +56,9 @@ export class HomeScene extends Phaser.Scene {
     this.selectedFacility = null;
     this.selectedExit = false;
 
-    // 背景：绿色草地（区别于战斗场景深色）
-    this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x2f3a2a);
-    const grid = this.add.graphics();
-    grid.lineStyle(1, GRID_COLOR, 0.3);
-    for (let x = 0; x <= GAME_WIDTH; x += 40) grid.lineBetween(x, 0, x, GAME_HEIGHT);
-    for (let y = 0; y <= GAME_HEIGHT; y += 40) grid.lineBetween(0, y, GAME_WIDTH, y);
+    // 背景：草地瓦片 + 暖色氛围（据点安全区的明亮感）
+    this.add.tileSprite(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 'tile_grass').setDepth(-10);
+    this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x2a3a12, 0.28).setDepth(-9);
 
     // 边界 + 中间树/石头障碍
     const walls = this.add.group();
@@ -87,6 +85,10 @@ export class HomeScene extends Phaser.Scene {
 
     // 设施绘制
     FACILITIES.forEach((f) => this.drawFacility(f));
+    // 装饰道具
+    this.add.image(900, 660, 'prop_well').setOrigin(0.5, 1).setScale(0.75).setDepth(-2);
+    this.add.image(140, 660, 'prop_jizo').setOrigin(0.5, 1).setScale(0.8).setDepth(-2);
+    this.add.image(1180, 660, 'prop_lantern').setOrigin(0.5, 1).setScale(0.7).setDepth(-2);
     this.drawExitDoor();
 
     // 顶部 banner
@@ -132,14 +134,10 @@ export class HomeScene extends Phaser.Scene {
   }
 
   private drawFacility(f: FacilityMarker): void {
-    const w = 96, h = 80;
-    this.add.rectangle(f.x, f.y, w, h, f.color).setStrokeStyle(3, 0x000000, 0.8);
-    const roof = this.add.graphics();
-    roof.fillStyle(0x441100, 1);
-    roof.fillTriangle(f.x - w / 2 - 8, f.y - h / 2, f.x, f.y - h / 2 - 24, f.x + w / 2 + 8, f.y - h / 2);
-    this.add.text(f.x, f.y + h / 2 + 10, f.label, {
+    this.add.image(f.x, f.y, f.prop).setOrigin(0.5, 1).setScale(f.scale).setDepth(-2);
+    this.add.text(f.x, f.y + 12, f.label, {
       fontSize: '16px', color: '#ffffff', fontStyle: 'bold',
-      stroke: '#000000', strokeThickness: 2,
+      stroke: '#000000', strokeThickness: 3,
     }).setOrigin(0.5);
   }
 

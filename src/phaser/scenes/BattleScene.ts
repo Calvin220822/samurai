@@ -145,72 +145,46 @@ export class BattleScene extends Phaser.Scene {
   }
 
   // ——————————————— 场景搭建 ———————————————
-  /** 区域主题：四个区域用不同地面色调 + 装饰，制造推进感 */
+  /** 四个区域使用不同地面瓦片 + 氛围叠色 + 场景道具 */
   private drawGround(): void {
     const themes = [
-      { ground: 0x3a3226, grid: 0x4a4033 },  // 枫隐村村口：土黄
-      { ground: 0x22331f, grid: 0x2f4a2a },  // 废弃竹林：墨绿
-      { ground: 0x2b2f3f, grid: 0x3b4157 },  // 神社前庭：青石
-      { ground: 0x2a1717, grid: 0x452222 },  // 地下神社：暗红
+      { tile: 'tile_dirt', overlay: 0x000000, alpha: 0.12 },   // 村口：土路
+      { tile: 'tile_grass', overlay: 0x0a2410, alpha: 0.22 },  // 竹林：草地
+      { tile: 'tile_stone', overlay: 0x101a2a, alpha: 0.20 },  // 神社前庭：青石
+      { tile: 'tile_dark', overlay: 0x2a0000, alpha: 0.34 },   // 地下神社：暗红
     ];
     const t = themes[this.areaIndex] ?? themes[0];
 
-    const g = this.add.graphics();
-    g.fillStyle(t.ground, 1);
-    g.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
-    g.lineStyle(1, t.grid, 0.55);
-    for (let x = 0; x <= GAME_WIDTH; x += TILE_SIZE) g.lineBetween(x, 0, x, GAME_HEIGHT);
-    for (let y = 0; y <= GAME_HEIGHT; y += TILE_SIZE) g.lineBetween(0, y, GAME_WIDTH, y);
+    this.add.tileSprite(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, t.tile)
+      .setDepth(-10);
+    this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, t.overlay, t.alpha)
+      .setDepth(-9);
 
     this.drawAreaDecor();
   }
 
   private drawAreaDecor(): void {
-    const d = this.add.graphics();
+    const put = (key: string, x: number, y: number, scale = 1, tint?: number) => {
+      const img = this.add.image(x, y, key).setOrigin(0.5, 1).setScale(scale).setDepth(-8).setAlpha(0.96);
+      if (tint !== undefined) img.setTint(tint);
+    };
+
     if (this.areaIndex === 0) {
-      // 鸟居 + 参道
-      d.fillStyle(0x8a2b22, 0.9);
-      d.fillRect(GAME_WIDTH / 2 - 120, 80, 14, 110);
-      d.fillRect(GAME_WIDTH / 2 + 106, 80, 14, 110);
-      d.fillRect(GAME_WIDTH / 2 - 140, 74, 280, 12);
-      d.fillRect(GAME_WIDTH / 2 - 124, 98, 248, 8);
-      d.fillStyle(0x4a4033, 0.5);
-      for (let y = 200; y < GAME_HEIGHT; y += 64) d.fillRect(GAME_WIDTH / 2 - 28, y, 56, 40);
+      put('prop_torii', GAME_WIDTH / 2, 230, 1.0);
+      put('prop_hut', 150, GAME_HEIGHT - 40, 0.8);
+      put('prop_lantern', GAME_WIDTH - 150, 250, 0.75);
     } else if (this.areaIndex === 1) {
-      // 竹竿
-      for (let i = 0; i < 18; i++) {
-        const x = 40 + ((i * 137) % (GAME_WIDTH - 80));
-        const seg = 30 + ((i * 53) % 40);
-        d.fillStyle(0x4f7a3a, 0.55);
-        d.fillRect(x, 40 + (i % 3) * 30, 6, GAME_HEIGHT - 120);
-        for (let y = 60; y < GAME_HEIGHT - 100; y += seg) {
-          d.fillStyle(0x2f4a2a, 0.7);
-          d.fillRect(x - 2, y, 10, 3);
-        }
-      }
+      put('prop_jizo', 180, GAME_HEIGHT - 40, 0.85);
+      put('prop_lantern', GAME_WIDTH - 140, 220, 0.75);
+      put('prop_well', 240, 230, 0.85);
     } else if (this.areaIndex === 2) {
-      // 石灯 + 石板
-      for (let i = 0; i < 4; i++) {
-        const x = 160 + i * 320;
-        d.fillStyle(0x5a5a66, 0.8);
-        d.fillRect(x - 10, 150, 20, 46);
-        d.fillStyle(0xffcc66, 0.45);
-        d.fillCircle(x, 142, 14);
-        d.lineStyle(2, 0x777788, 0.35);
-        d.strokeRect(x - 40, 300 + (i % 2) * 120, 80, 60);
-      }
+      put('prop_shrine', GAME_WIDTH / 2, 230, 1.0);
+      put('prop_lantern', 300, 230, 0.8);
+      put('prop_lantern', GAME_WIDTH - 300, 230, 0.8);
     } else {
-      // 地下神社：红柱 + 骨堆
-      d.fillStyle(0x5a1a1a, 0.65);
-      [200, GAME_WIDTH - 200].forEach((x) => d.fillRect(x - 12, 0, 24, GAME_HEIGHT));
-      d.fillStyle(0xcfc7b0, 0.25);
-      for (let i = 0; i < 6; i++) {
-        const x = 120 + i * 200;
-        const y = 480 + (i % 3) * 40;
-        d.fillCircle(x, y, 9);
-        d.fillCircle(x + 14, y - 6, 7);
-        d.fillCircle(x - 14, y - 4, 7);
-      }
+      put('prop_shrine', GAME_WIDTH / 2, 240, 1.15, 0xff8f7a);
+      put('prop_lantern', 260, 220, 0.85, 0xffaa66);
+      put('prop_lantern', GAME_WIDTH - 260, 220, 0.85, 0xffaa66);
     }
   }
 

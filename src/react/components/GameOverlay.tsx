@@ -146,14 +146,19 @@ export function GameOverlay() {
               <div className="go-grid">
                 <div className="go-card">
                   <h3>属性</h3>
-                  <div className="go-stat-row"><span>HP</span><b>{player.hp} / {player.maxHp}</b></div>
-                  <div className="go-bar hp"><i style={{ width: `${hpRatio * 100}%` }} /></div>
-                  <div className="go-stat-row"><span>等级</span><b>Lv.{player.level}</b></div>
-                  <div className="go-bar exp"><i style={{ width: `${expRatio * 100}%` }} /></div>
-                  <div className="go-stat-row"><span>经验</span><b>{player.exp} / {player.levelExp}</b></div>
-                  <div className="go-stat-row"><span>攻击 / 防御</span><b>{stats.atk} / {stats.def}</b></div>
-                  <div className="go-stat-row"><span>技能点</span><b>{player.skillPoints}</b></div>
-                  <button className="go-btn" style={{ marginTop: 10 }} onClick={handleRest}>休息至满血</button>
+                  <div className="go-profile">
+                    <img className="go-portrait" src="/assets/portrait_0.png" alt="妖刀武士" />
+                    <div className="go-profile-stats">
+                      <div className="go-stat-row"><span>HP</span><b>{player.hp} / {player.maxHp}</b></div>
+                      <div className="go-bar hp"><i style={{ width: `${hpRatio * 100}%` }} /></div>
+                      <div className="go-stat-row"><span>等级</span><b>Lv.{player.level}</b></div>
+                      <div className="go-bar exp"><i style={{ width: `${expRatio * 100}%` }} /></div>
+                      <div className="go-stat-row"><span>经验</span><b>{player.exp} / {player.levelExp}</b></div>
+                      <div className="go-stat-row"><span>攻击 / 防御</span><b>{stats.atk} / {stats.def}</b></div>
+                      <div className="go-stat-row"><span>技能点</span><b>{player.skillPoints}</b></div>
+                      <button className="go-btn" style={{ marginTop: 10 }} onClick={handleRest}>休息至满血</button>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="go-card">
