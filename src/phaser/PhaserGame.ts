@@ -4,16 +4,12 @@ import { BootScene } from './scenes/BootScene.js';
 import { HomeScene } from './scenes/HomeScene.js';
 import { BattleScene } from './scenes/BattleScene.js';
 import { BossScene } from './scenes/BossScene.js';
+import { setGameInstance } from './gameInstance.js';
 import type { GameBootOptions } from './core/types.js';
 
 /**
- * 创建并启动 Phaser.Game 实例。
- * 由 React 的 PhaserCanvas 组件在 useEffect 中调用。
- *
- * Phase 4 场景注册：Boot → Home → Battle → Boss。
- * BootScene 启动即跳 HomeScene；HomeScene 据点 F 键出征进 Battle；
- * BattleScene 区域推进到地下神社触发 BossScene；
- * BossScene 胜负皆返回 HomeScene。
+ * 创建并启动 Phaser.Game 实例（React PhaserCanvas 在 useEffect 中调用）。
+ * 场景：Boot → Home → Battle → Boss。
  */
 export function createPhaserGame(opts: GameBootOptions): Phaser.Game {
   const config: Phaser.Types.Core.GameConfig = {
@@ -23,5 +19,6 @@ export function createPhaserGame(opts: GameBootOptions): Phaser.Game {
   };
 
   const game = new Phaser.Game(config);
+  setGameInstance(game);
   return game;
 }

@@ -10,16 +10,19 @@ import {
   BOSS_SUMMON_COOLDOWN_MS, GAME_WIDTH, GAME_HEIGHT,
 } from '../../config/Constants.js';
 
-export type BossAttackType = 'idle' | 'swipe' | 'slam' | 'charge' | 'ghostfire';
+export type BossAttackType = 'idle' | 'swipe' | 'slam' | 'charge';
 
 /**
- * Boss 赤月鬼将 —— Phase 4 独立实体，不继承 Enemy.ts。
- * 两阶段 + 多攻击模式：swipe / slam / charge + ghostfire / summon。
+ * Boss 赤月鬼将。
+ *
+ * 独立实体（不继承 Enemy），因为它的攻击模式、阶段演出、HP 条都更特殊。
+ * 所有对外通知走 `this.scene.events`，由 BossScene 统一判定与表现。
  */
 export class BossAkatsuki extends Phaser.GameObjects.Container {
   public arcadeBody!: Phaser.Physics.Arcade.Body;
 
   private hitbox!: Phaser.GameObjects.Arc;
+  private auraGfx!: Phaser.GameObjects.Graphics;
   private hornGfx!: Phaser.GameObjects.Graphics;
   private eyeGfx!: Phaser.GameObjects.Graphics;
 
@@ -31,7 +34,7 @@ export class BossAkatsuki extends Phaser.GameObjects.Container {
 
   private isPhase2 = false;
   private attackType: BossAttackType = 'idle';
-  private attackCooldownMs = 2000;
+  private attackCooldownMs = 2200;
   private windupRemaining = 0;
   private attackRemaining = 0;
   private chargeVelX = 0;
@@ -57,36 +60,35 @@ export class BossAkatsuki extends Phaser.GameObjects.Container {
   }
 
   private createGraphics(): void {
+    this.auraGfx = this.scene.add.graphics();
     this.hitbox = this.scene.add.circle(0, 0, this.radius, 0x6a1a1a, 1)
       .setStrokeStyle(4, 0xff4433, 1);
     this.hornGfx = this.scene.add.graphics();
     this.eyeGfx = this.scene.add.graphics();
+    this.add([this.auraGfx, this.hitbox, this.hornGfx, this.eyeGfx]);
     this.drawBody();
-    this.add([this.hitbox, this.hornGfx, this.eyeGfx]);
   }
 
-  private drawBody(): void {
-    // 光环（呼吸动画）
-    const aura = this.scene.add.graphics();
-    aura.lineStyle(3, this.isPhase2 ? 0xff2222 : 0x882222, 0.7);
-    const r = this.radius + 12 + Math.sin(this.scene.time.now * 0.005) * 4;
-    aura.strokeCircle(0, 0, r);
-    // 清理前一帧光环（直接销毁会 leak；简单做法：每帧重建但控制数量）
-    const prev = this.getData('_aura') as Phaser.GameObjects.Graphics | undefined;
-    if (prev) prev.destroy();
-    this.setData('_aura', aura);
+  /** 重绘身体（阶段变化 / 受击闪白时调用） */
+  public drawBody(): void {
+    const auraColor = this.isPhase2 ? 0xff2222 : 0x882222;
+    this.auraGfx.clear();
+    this.auraGfx.lineStyle(3, auraColor, 0.55);
+    const pulse = this.radius + 12 + Math.sin(this.scene.time.now * 0.005) * 4;
+    this.auraGfx.strokeCircle(0, 0, pulse);
+    this.auraGfx.lineStyle(1, auraColor, 0.25);
+    this.auraGfx.strokeCircle(0, 0, pulse + 10);
 
-    // 头顶角
     this.hornGfx.clear();
     this.hornGfx.fillStyle(this.isPhase2 ? 0xffffff : 0x330000, 1);
     this.hornGfx.fillTriangle(-14, -this.radius + 4, -6, -this.radius - 16, -20, -this.radius - 2);
     this.hornGfx.fillTriangle(14, -this.radius + 4, 6, -this.radius - 16, 20, -this.radius - 2);
-    // 眼睛
+
     this.eyeGfx.clear();
     this.eyeGfx.fillStyle(this.isPhase2 ? 0xffff00 : 0xff6600, 1);
     this.eyeGfx.fillCircle(-10, -4, 4);
     this.eyeGfx.fillCircle(10, -4, 4);
-    // 主体
+
     this.hitbox.setFillStyle(this.isPhase2 ? 0x8a2222 : 0x6a1a1a, 1);
     this.hitbox.setStrokeStyle(5, this.isPhase2 ? 0xffffff : 0xff4433, 1);
   }
@@ -95,9 +97,10 @@ export class BossAkatsuki extends Phaser.GameObjects.Container {
     if (this.dead) return;
     this.hp = Math.max(0, this.hp - amount);
     this.scene.events.emit('boss:hit', { amount, hp: this.hp, maxHp: this.maxHp });
-    // 白闪
+
     this.hitbox.setFillStyle(0xffffff, 1);
     this.scene.time.delayedCall(60, () => { if (!this.dead) this.drawBody(); });
+
     if (!this.isPhase2 && this.hp / this.maxHp <= BOSS_PHASE2_HP_RATIO) this.enterPhase2();
     if (this.hp <= 0) this.die();
   }
@@ -108,11 +111,16 @@ export class BossAkatsuki extends Phaser.GameObjects.Container {
     this.scene.cameras.main.shake(500, 0.006);
     this.setScale(1.3);
     this.scene.time.delayedCall(250, () => { this.setScale(1); this.drawBody(); });
+
     const banner = this.scene.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 140, '赤月鬼将 · 狂暴', {
       fontSize: '36px', color: '#ff4433', fontStyle: 'bold',
       stroke: '#000000', strokeThickness: 4,
-    }).setOrigin(0.5);
-    this.scene.tweens.add({ targets: banner, alpha: 0, duration: 1500, onComplete: () => banner.destroy() });
+    }).setOrigin(0.5).setDepth(50);
+    this.scene.tweens.add({
+      targets: banner, alpha: 0, duration: 1500,
+      onComplete: () => banner.destroy(),
+    });
+    this.scene.events.emit('boss:phase2');
   }
 
   private die(): void {
@@ -126,42 +134,40 @@ export class BossAkatsuki extends Phaser.GameObjects.Container {
     });
   }
 
-  /** 每帧调用。由 BossScene 的 update 转发。 */
+  /** 每帧由 BossScene 转发 */
   public tick(deltaMs: number, player: Player): void {
     if (this.dead) return;
-    this.drawBody();  // 光环呼吸
+    this.drawBody();
 
     const dx = player.x - this.x;
     const dy = player.y - this.y;
     const dist = Math.hypot(dx, dy);
 
     if (this.attackType === 'idle') {
-      // 追击
       const len = Math.max(1, dist);
       this.arcadeBody.setVelocity((dx / len) * this.speed, (dy / len) * this.speed);
       this.attackCooldownMs -= deltaMs;
-      if (this.attackCooldownMs <= 0 && dist < 400) this.pickAttack(dist);
+      if (this.attackCooldownMs <= 0 && dist < 420) this.pickAttack(dist);
     } else if (this.windupRemaining > 0) {
       this.windupRemaining -= deltaMs;
       const v = this.arcadeBody.velocity;
-      this.arcadeBody.setVelocity(v.x * 0.5, v.y * 0.5);
+      this.arcadeBody.setVelocity(v.x * 0.4, v.y * 0.4);
       if (this.windupRemaining <= 0) this.executeAttack(player);
     } else if (this.attackRemaining > 0) {
       this.attackRemaining -= deltaMs;
       if (this.attackType === 'charge') this.arcadeBody.setVelocity(this.chargeVelX, this.chargeVelY);
       if (this.attackRemaining <= 0) {
         this.attackType = 'idle';
-        this.attackCooldownMs = BOSS_SWIPE_COOLDOWN_MS;
+        this.attackCooldownMs = 900;
       }
     }
 
-    // Phase 2 额外定时
     if (this.isPhase2) {
       this.ghostfireCdMs -= deltaMs;
       if (this.ghostfireCdMs <= 0) {
         this.ghostfireCdMs = BOSS_GHOSTFIRE_COOLDOWN_MS;
         this.scene.events.emit('boss:ghostfire', {
-          x: this.x, y: this.y, radius: BOSS_GHOSTFIRE_RADIUS, damage: BOSS_GHOSTFIRE_DAMAGE, source: this,
+          x: this.x, y: this.y, radius: BOSS_GHOSTFIRE_RADIUS, damage: BOSS_GHOSTFIRE_DAMAGE,
         });
       }
       this.summonCdMs -= deltaMs;
@@ -183,28 +189,33 @@ export class BossAkatsuki extends Phaser.GameObjects.Container {
       pick = Math.random() < 0.6 ? 'charge' : 'swipe';
     }
     this.attackType = pick;
-    if (pick === 'swipe') { this.windupRemaining = BOSS_SWIPE_WINDUP_MS; this.attackRemaining = 200; this.attackCooldownMs = BOSS_SWIPE_COOLDOWN_MS; }
-    else if (pick === 'slam') { this.windupRemaining = BOSS_SLAM_WINDUP_MS; this.attackRemaining = 300; this.attackCooldownMs = BOSS_SLAM_COOLDOWN_MS; }
-    else if (pick === 'charge') { this.windupRemaining = BOSS_CHARGE_WINDUP_MS; this.attackRemaining = BOSS_CHARGE_DURATION_MS; this.attackCooldownMs = BOSS_CHARGE_COOLDOWN_MS; }
+    if (pick === 'swipe') {
+      this.windupRemaining = BOSS_SWIPE_WINDUP_MS; this.attackRemaining = 200; this.attackCooldownMs = BOSS_SWIPE_COOLDOWN_MS;
+    } else if (pick === 'slam') {
+      this.windupRemaining = BOSS_SLAM_WINDUP_MS; this.attackRemaining = 300; this.attackCooldownMs = BOSS_SLAM_COOLDOWN_MS;
+    } else {
+      this.windupRemaining = BOSS_CHARGE_WINDUP_MS; this.attackRemaining = BOSS_CHARGE_DURATION_MS; this.attackCooldownMs = BOSS_CHARGE_COOLDOWN_MS;
+    }
+    this.scene.events.emit('boss:windup', { type: pick });
   }
 
   private executeAttack(player: Player): void {
     if (this.attackType === 'swipe') {
       this.scene.events.emit('boss:swipe', {
         x: this.x, y: this.y, radius: BOSS_SWIPE_RADIUS,
-        fanDeg: BOSS_SWIPE_FAN_DEG, damage: this.atkDamage, source: this,
+        fanDeg: BOSS_SWIPE_FAN_DEG, damage: this.atkDamage,
       });
     } else if (this.attackType === 'slam') {
       this.scene.events.emit('boss:slam', {
-        x: this.x, y: this.y, radius: BOSS_SLAM_RADIUS,
-        damage: BOSS_SLAM_DAMAGE, source: this,
+        x: this.x, y: this.y, radius: BOSS_SLAM_RADIUS, damage: BOSS_SLAM_DAMAGE,
       });
     } else if (this.attackType === 'charge') {
-      const dx = player.x - this.x, dy = player.y - this.y;
+      const dx = player.x - this.x;
+      const dy = player.y - this.y;
       const len = Math.max(1, Math.hypot(dx, dy));
       this.chargeVelX = (dx / len) * BOSS_CHARGE_SPEED;
       this.chargeVelY = (dy / len) * BOSS_CHARGE_SPEED;
-      this.scene.events.emit('boss:charge-start', { source: this });
+      this.scene.events.emit('boss:charge', { dx, dy });
     }
   }
 }

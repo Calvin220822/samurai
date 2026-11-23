@@ -1,9 +1,11 @@
 /**
- * 技能系统（Phase 3 版本）。
+ * 技能系统。
  *
- * 与 Phase 2 相比：
- * - 新增 castR（鬼神斩：蓄力 + 扇形范围 + 不可移动）
- * - 集成 SoulSystem hooks：妖魂修改 W 半径 / E 无敌时间 / 普攻吸血
+ * 键位：Q 居合斩 / W 旋风斩 / E 影步 / R 鬼神斩。
+ *
+ * Phase 5：接入两条成长线
+ * - 妖魂（SoulSystem）：改变技能形态（W 半径 / E 无敌）
+ * - 技能升级（store.skillUpgrades）：A 路线强化主效果，B 路线强化冷却/副效果
  */
 
 import Phaser from 'phaser';
@@ -17,26 +19,56 @@ import {
 } from '../config/Constants.js';
 import type { Player } from '../entities/Player.js';
 import { soulSystem } from './SoulSystem.js';
+import { useGameStore, type SkillId } from '@/store/gameStore.js';
 
 export interface SkillCooldown { Q: number; W: number; E: number; R: number; }
 
 export class SkillSystem {
   private cd: SkillCooldown = { Q: 0, W: 0, E: 0, R: 0 };
+  private cdMax: SkillCooldown = {
+    Q: SKILL_Q_COOLDOWN_MS, W: SKILL_W_COOLDOWN_MS,
+    E: SKILL_E_COOLDOWN_MS, R: SKILL_R_COOLDOWN_MS,
+  };
 
   reset(): void { this.cd = { Q: 0, W: 0, E: 0, R: 0 }; }
+
   tick(deltaMs: number): void {
     (['Q', 'W', 'E', 'R'] as const).forEach((k) => {
       this.cd[k] = Math.max(0, this.cd[k] - deltaMs);
     });
   }
 
-  isReady(s: keyof SkillCooldown): boolean { return this.cd[s] <= 0; }
-  remainingMs(s: keyof SkillCooldown): number { return this.cd[s]; }
+  isReady(s: SkillId): boolean { return this.cd[s] <= 0; }
+  remainingMs(s: SkillId): number { return this.cd[s]; }
+  getMaxCooldown(s: SkillId): number { return this.cdMax[s]; }
+  /** 0 = 就绪，1 = 刚好释放 */
+  cooldownRatio(s: SkillId): number {
+    const max = this.cdMax[s];
+    return max <= 0 ? 0 : Math.min(1, this.cd[s] / max);
+  }
 
-  /** Q 居合斩 */
+  // —— 成长系数 ——
+  private mods(skill: SkillId) {
+    return useGameStore.getState().skillMods(skill);
+  }
+  private qDamage(): number { return Math.round(SKILL_Q_DAMAGE * (1 + 0.15 * this.mods('Q').a)); }
+  private qCd(): number { return Math.round(SKILL_Q_COOLDOWN_MS * (1 - 0.10 * this.mods('Q').b)); }
+  private wRadius(): number {
+    const base = SKILL_W_RADIUS * (1 + 0.15 * this.mods('W').a);
+    return soulSystem.aggregateRadius('W', base);
+  }
+  private wDamage(): number { return Math.round(SKILL_W_DAMAGE * (1 + 0.15 * this.mods('W').b)); }
+  private eCd(): number { return Math.round(SKILL_E_COOLDOWN_MS * (1 - 0.12 * this.mods('E').a)); }
+  private eInvuln(): number {
+    return soulSystem.aggregateInvuln(SKILL_E_INVULN_MS + 80 * this.mods('E').b);
+  }
+  private rDamage(): number { return Math.round(SKILL_R_DAMAGE * (1 + 0.20 * this.mods('R').a)); }
+  private rCd(): number { return Math.round(SKILL_R_COOLDOWN_MS * (1 - 0.15 * this.mods('R').b)); }
+
+  /** Q 居合斩：向前冲刺，路径矩形伤害 */
   castQ(player: Player): boolean {
     if (!this.isReady('Q')) return false;
-    this.cd.Q = SKILL_Q_COOLDOWN_MS;
+    this.cd.Q = this.cdMax.Q = this.qCd();
 
     const facing = player.getFacing();
     const dx = facing === 'right' ? 1 : -1;
@@ -51,34 +83,33 @@ export class SkillSystem {
     scene.events.emit('skill:q-start', {
       x: player.x, y: player.y, dx,
       distance: SKILL_Q_DASH_DISTANCE, width: SKILL_Q_WIDTH,
-      damage: SKILL_Q_DAMAGE,
+      damage: this.qDamage(),
     });
     return true;
   }
 
-  /** W 旋风斩 —— 天狗妖魂可放大半径 */
+  /** W 旋风斩：原地圆形范围 */
   castW(player: Player): boolean {
     if (!this.isReady('W')) return false;
-    this.cd.W = SKILL_W_COOLDOWN_MS;
+    this.cd.W = this.cdMax.W = SKILL_W_COOLDOWN_MS;
 
     const scene = getScene(player);
     const body = getArcadeBody(player);
     body.setVelocity(0, 0);
 
-    const radius = soulSystem.aggregateRadius('W', SKILL_W_RADIUS);
     soulSystem.emitSkillCast('W');
     scene.events.emit('skill:w-start', {
-      x: player.x, y: player.y, radius, damage: SKILL_W_DAMAGE,
+      x: player.x, y: player.y,
+      radius: this.wRadius(), damage: this.wDamage(),
+      castMs: SKILL_W_CAST_MS,
     });
-
-    scene.time.delayedCall(SKILL_W_CAST_MS, () => { /* 释放 */ });
     return true;
   }
 
-  /** E 影步 —— 镰鼬妖魂可延长无敌时间 */
-  castE(player: Player, moveDir: { dx: number; dy: number }): boolean {
-    if (!this.isReady('E')) return false;
-    this.cd.E = SKILL_E_COOLDOWN_MS;
+  /** E 影步：短位移 + 无敌，返回无敌时长（0 表示未释放） */
+  castE(player: Player, moveDir: { dx: number; dy: number }): number {
+    if (!this.isReady('E')) return 0;
+    this.cd.E = this.cdMax.E = this.eCd();
 
     const scene = getScene(player);
     const body = getArcadeBody(player);
@@ -95,38 +126,36 @@ export class SkillSystem {
     const durMs = (SKILL_E_DISTANCE / instantSpeed) * 1000;
     scene.time.delayedCall(durMs + 10, () => body.setVelocity(0, 0));
 
-    const invulnMs = soulSystem.aggregateInvuln(SKILL_E_INVULN_MS);
-    scene.time.delayedCall(invulnMs, () => scene.events.emit('skill:e-invuln-end'));
     soulSystem.emitSkillCast('E');
-    return true;
+    return this.eInvuln();
   }
 
-  /** R 鬼神斩 —— 蓄力期间不可移动，120° 大扇形 */
+  /** R 鬼神斩：600ms 蓄力后 120° 大扇形 */
   castR(player: Player): boolean {
     if (!this.isReady('R')) return false;
-    this.cd.R = SKILL_R_COOLDOWN_MS;
+    this.cd.R = this.cdMax.R = this.rCd();
 
     const scene = getScene(player);
     const body = getArcadeBody(player);
     body.setVelocity(0, 0);
 
-    // 蓄力期间持续 emit 技能事件，BattleScene 可做蓄力特效
     scene.events.emit('skill:r-charge', { x: player.x, y: player.y });
 
     scene.time.delayedCall(SKILL_R_CAST_MS, () => {
+      if (!player.active) return;
       const facing = player.getFacing();
       const dx = facing === 'right' ? 1 : -1;
       scene.events.emit('skill:r-start', {
         x: player.x, y: player.y, dx,
         fanRadius: SKILL_R_FAN_RADIUS, fanAngleDeg: SKILL_R_FAN_ANGLE_DEG,
-        damage: SKILL_R_DAMAGE,
+        damage: this.rDamage(),
       });
       soulSystem.emitSkillCast('R');
     });
     return true;
   }
 
-  /** 普攻矩形（给 BattleScene 用） */
+  /** 普攻矩形（给场景做命中判定） */
   resolveNormalAttack(player: { x: number; y: number; getFacing(): 'left' | 'right' }) {
     const facing = player.getFacing();
     const dx = facing === 'right' ? 1 : -1;

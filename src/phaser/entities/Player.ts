@@ -7,7 +7,7 @@ import {
   PLAYER_RADIUS,
   PLAYER_SPEED,
   PLAYER_SWORD_COLOR,
-  SKILL_E_INVULN_MS,
+  SKILL_R_CAST_MS,
 } from '../config/Constants.js';
 import { EVT, EventBus } from '../core/EventBus.js';
 import type { SkillSystem } from '../systems/SkillSystem.js';
@@ -47,7 +47,8 @@ export class Player extends Phaser.GameObjects.Container {
     upArrow: Phaser.Input.Keyboard.Key; downArrow: Phaser.Input.Keyboard.Key;
     leftArrow: Phaser.Input.Keyboard.Key; rightArrow: Phaser.Input.Keyboard.Key;
     fire: Phaser.Input.Keyboard.Key;
-    skillQ: Phaser.Input.Keyboard.Key; skillW: Phaser.Input.Keyboard.Key; skillE: Phaser.Input.Keyboard.Key;
+    skillQ: Phaser.Input.Keyboard.Key; skillW: Phaser.Input.Keyboard.Key;
+    skillE: Phaser.Input.Keyboard.Key; skillR: Phaser.Input.Keyboard.Key;
   };
   private fireWasDown = false;
   private skills: SkillSystem;
@@ -71,14 +72,15 @@ export class Player extends Phaser.GameObjects.Container {
 
   private registerInput(scene: Phaser.Scene) {
     const kb = scene.input.keyboard!;
-    // WASD / 方向键负责移动；Q / E / R 负责技能（与架构文档一致）
+    // WASD / 方向键移动；Q 居合斩 / W 旋风斩 / E 影步 / R 鬼神斩
     return {
       up: kb.addKey('W'), down: kb.addKey('S'),
       left: kb.addKey('A'), right: kb.addKey('D'),
       upArrow: kb.addKey('UP'), downArrow: kb.addKey('DOWN'),
       leftArrow: kb.addKey('LEFT'), rightArrow: kb.addKey('RIGHT'),
       fire: kb.addKey('SPACE'),
-      skillQ: kb.addKey('Q'), skillW: kb.addKey('E'), skillE: kb.addKey('R'),
+      skillQ: kb.addKey('Q'), skillW: kb.addKey('W'),
+      skillE: kb.addKey('E'), skillR: kb.addKey('R'),
     };
   }
 
@@ -141,7 +143,7 @@ export class Player extends Phaser.GameObjects.Container {
     if (useGameStore.getState().player.hp <= 0 && this.playerState !== 'DYING') this.die();
   }
 
-  /** Phase 3：技能键 Q / W / E / R 触发四种技能 */
+  /** 技能键 Q / W / E / R 触发四种技能 */
   private handleSkills(): void {
     const now = this.scene.time.now;
     if (Phaser.Input.Keyboard.JustDown(this.kbd.skillQ)) {
@@ -153,16 +155,16 @@ export class Player extends Phaser.GameObjects.Container {
     }
     if (Phaser.Input.Keyboard.JustDown(this.kbd.skillE)) {
       const mv = this.currentMoveDirection();
-      this.skills.castE(this, mv);
-      this.invulnUntil = now + SKILL_E_INVULN_MS;
+      // castE 返回本次无敌时长（>0 表示释放成功）
+      const invulnMs = this.skills.castE(this, mv);
+      if (invulnMs > 0) this.invulnUntil = now + invulnMs;
     }
-    if (Phaser.Input.Keyboard.JustDown((this.kbd as any).skillR)) {
-      const castMs = 600;
-      this.skills.castR(this);
-      this.rChargingUntil = now + castMs;
-      this.rChargingSwordFlashOn = true;
-      this.scene.events.emit('skill:r-charge', { x: this.x, y: this.y });
-      this.scene.time.delayedCall(castMs, () => { this.rChargingSwordFlashOn = false; });
+    if (Phaser.Input.Keyboard.JustDown(this.kbd.skillR)) {
+      if (this.skills.castR(this)) {
+        this.rChargingUntil = now + SKILL_R_CAST_MS;
+        this.rChargingSwordFlashOn = true;
+        this.scene.time.delayedCall(SKILL_R_CAST_MS, () => { this.rChargingSwordFlashOn = false; });
+      }
     }
   }
 

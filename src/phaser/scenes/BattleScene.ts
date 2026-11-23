@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import {
-  GAME_HEIGHT, GAME_WIDTH, GRID_COLOR, GROUND_COLOR, TILE_SIZE, WALL_COLOR,
+  GAME_HEIGHT, GAME_WIDTH, TILE_SIZE, WALL_COLOR,
   PLAYER_ATTACK_DAMAGE, PLAYER_ATTACK_RANGE,
   SKILL_Q_DASH_DISTANCE, SKILL_Q_WIDTH,
   SKILL_W_RADIUS, SKILL_W_DAMAGE,
@@ -17,7 +17,7 @@ import { EliteGeneral } from '../entities/enemies/EliteGeneral.js';
 import { SkillSystem } from '../systems/SkillSystem.js';
 import { LevelSystem } from '../systems/LevelSystem.js';
 import { soulSystem } from '../systems/SoulSystem.js';
-import { applyEquipmentStatDelta, useGameStore } from '@/store/gameStore.js';
+import { useGameStore } from '@/store/gameStore.js';
 import { EQUIPMENT_DB, COMMON_DROP_POOL, rollFromPool, RARITY_COLOR } from '@/phaser/data/equipment.js';
 import { SOUL_DB } from '@/phaser/data/souls.js';
 
@@ -59,8 +59,10 @@ export class BattleScene extends Phaser.Scene {
   }
 
   create(): void {
-    useGameStore.getState().resetForBattle();
+    // 不重置 HP：区域间保留血量，据点休息才回满
+    useGameStore.getState().resetCombat();
     useGameStore.getState().setScene('BattleScene');
+    useGameStore.getState().setUiPanel('none');
     this.kills = 0; this.totalExpEarned = 0;
     this.areaClear = false; this.areaDoorVisible = false;
 
@@ -97,32 +99,39 @@ export class BattleScene extends Phaser.Scene {
 
     this.input.on('pointerdown', this.onResultPanelClick, this);
     this.input.on('pointerdown', this.onDropClick, this);
-    this.input.keyboard?.on('keydown-ESC', this.toggleInventoryModal, this);
+    // Esc 角色面板由 React GameOverlay 统一处理（避免与场景暂停后输入失效冲突）
     this.input.keyboard?.on('keydown-F', this.onAreaDoorInteract, this);
 
     // 区域 Banner 动画
     this.showAreaBanner();
-  }
 
-  shutdown(): void {
-    this.events.off('player:attack-hit', this.onPlayerAttackHit, this);
-    this.events.off('skill:q-start', this.onSkillQStart, this);
-    this.events.off('skill:w-start', this.onSkillWStart, this);
-    this.events.off('skill:e-start', this.onSkillEStart, this);
-    this.events.off('skill:r-charge', this.onSkillRCharge, this);
-    this.events.off('skill:r-start', this.onSkillRStart, this);
-    this.events.off('enemy:attack', this.onEnemyAttack, this);
-    this.events.off('enemy:dead', this.onEnemyDead, this);
-    this.events.off('elite:summon', this.onEliteSummon, this);
-    this.events.off('elite:ghostfire', this.onEliteGhostfire, this);
-    this.events.off('elite:phase2-enter', this.onElitePhase2Enter, this);
-    this.input.off('pointerdown', this.onResultPanelClick, this);
-    this.input.off('pointerdown', this.onDropClick, this);
-    this.input.keyboard?.off('keydown-ESC', this.toggleInventoryModal, this);
+    // 场景销毁时统一解绑（scene.restart / scene.start 都会触发）
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.events.off('player:attack-hit', this.onPlayerAttackHit, this);
+      this.events.off('skill:q-start', this.onSkillQStart, this);
+      this.events.off('skill:w-start', this.onSkillWStart, this);
+      this.events.off('skill:e-start', this.onSkillEStart, this);
+      this.events.off('skill:r-charge', this.onSkillRCharge, this);
+      this.events.off('skill:r-start', this.onSkillRStart, this);
+      this.events.off('enemy:attack', this.onEnemyAttack, this);
+      this.events.off('enemy:dead', this.onEnemyDead, this);
+      this.events.off('elite:summon', this.onEliteSummon, this);
+      this.events.off('elite:ghostfire', this.onEliteGhostfire, this);
+      this.events.off('elite:phase2-enter', this.onElitePhase2Enter, this);
+      this.input.off('pointerdown', this.onResultPanelClick, this);
+      this.input.off('pointerdown', this.onDropClick, this);
+      this.input.keyboard?.off('keydown-F', this.onAreaDoorInteract, this);
+    });
   }
 
   update(time: number, deltaMs: number): void {
     if (this.resultPanelVisible) return;
+
+    // React 面板打开时冻结模拟（技能冷却 / 敌人 AI 全部暂停）
+    if (useGameStore.getState().isUiOpen()) {
+      (this.player.body as Phaser.Physics.Arcade.Body).setVelocity(0, 0);
+      return;
+    }
 
     this.skills.tick(deltaMs);
     this.player.update(time, deltaMs);
@@ -136,13 +145,73 @@ export class BattleScene extends Phaser.Scene {
   }
 
   // ——————————————— 场景搭建 ———————————————
+  /** 区域主题：四个区域用不同地面色调 + 装饰，制造推进感 */
   private drawGround(): void {
+    const themes = [
+      { ground: 0x3a3226, grid: 0x4a4033 },  // 枫隐村村口：土黄
+      { ground: 0x22331f, grid: 0x2f4a2a },  // 废弃竹林：墨绿
+      { ground: 0x2b2f3f, grid: 0x3b4157 },  // 神社前庭：青石
+      { ground: 0x2a1717, grid: 0x452222 },  // 地下神社：暗红
+    ];
+    const t = themes[this.areaIndex] ?? themes[0];
+
     const g = this.add.graphics();
-    g.fillStyle(GROUND_COLOR, 1);
+    g.fillStyle(t.ground, 1);
     g.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
-    g.lineStyle(1, GRID_COLOR, 0.5);
+    g.lineStyle(1, t.grid, 0.55);
     for (let x = 0; x <= GAME_WIDTH; x += TILE_SIZE) g.lineBetween(x, 0, x, GAME_HEIGHT);
     for (let y = 0; y <= GAME_HEIGHT; y += TILE_SIZE) g.lineBetween(0, y, GAME_WIDTH, y);
+
+    this.drawAreaDecor();
+  }
+
+  private drawAreaDecor(): void {
+    const d = this.add.graphics();
+    if (this.areaIndex === 0) {
+      // 鸟居 + 参道
+      d.fillStyle(0x8a2b22, 0.9);
+      d.fillRect(GAME_WIDTH / 2 - 120, 80, 14, 110);
+      d.fillRect(GAME_WIDTH / 2 + 106, 80, 14, 110);
+      d.fillRect(GAME_WIDTH / 2 - 140, 74, 280, 12);
+      d.fillRect(GAME_WIDTH / 2 - 124, 98, 248, 8);
+      d.fillStyle(0x4a4033, 0.5);
+      for (let y = 200; y < GAME_HEIGHT; y += 64) d.fillRect(GAME_WIDTH / 2 - 28, y, 56, 40);
+    } else if (this.areaIndex === 1) {
+      // 竹竿
+      for (let i = 0; i < 18; i++) {
+        const x = 40 + ((i * 137) % (GAME_WIDTH - 80));
+        const seg = 30 + ((i * 53) % 40);
+        d.fillStyle(0x4f7a3a, 0.55);
+        d.fillRect(x, 40 + (i % 3) * 30, 6, GAME_HEIGHT - 120);
+        for (let y = 60; y < GAME_HEIGHT - 100; y += seg) {
+          d.fillStyle(0x2f4a2a, 0.7);
+          d.fillRect(x - 2, y, 10, 3);
+        }
+      }
+    } else if (this.areaIndex === 2) {
+      // 石灯 + 石板
+      for (let i = 0; i < 4; i++) {
+        const x = 160 + i * 320;
+        d.fillStyle(0x5a5a66, 0.8);
+        d.fillRect(x - 10, 150, 20, 46);
+        d.fillStyle(0xffcc66, 0.45);
+        d.fillCircle(x, 142, 14);
+        d.lineStyle(2, 0x777788, 0.35);
+        d.strokeRect(x - 40, 300 + (i % 2) * 120, 80, 60);
+      }
+    } else {
+      // 地下神社：红柱 + 骨堆
+      d.fillStyle(0x5a1a1a, 0.65);
+      [200, GAME_WIDTH - 200].forEach((x) => d.fillRect(x - 12, 0, 24, GAME_HEIGHT));
+      d.fillStyle(0xcfc7b0, 0.25);
+      for (let i = 0; i < 6; i++) {
+        const x = 120 + i * 200;
+        const y = 480 + (i % 3) * 40;
+        d.fillCircle(x, y, 9);
+        d.fillCircle(x + 14, y - 6, 7);
+        d.fillCircle(x - 14, y - 4, 7);
+      }
+    }
   }
 
   private buildWalls(): void {
@@ -459,11 +528,8 @@ export class BattleScene extends Phaser.Scene {
         const itemId = (d as any).itemId as string;
         const item = EQUIPMENT_DB[itemId];
         if (!item) { d.destroy(); continue; }
-        const store = useGameStore.getState();
-        const oldId = store.equipment[item.slot];
-        store.equipItem(item.slot, itemId);
-        applyEquipmentStatDelta(item.slot, oldId, itemId);
-        this.showGoldFloat(d.x, d.y - 10, 0);   // 不用，占位
+        // equipItem 内部会 recomputeDerivedStats，无需再单独调整属性
+        useGameStore.getState().equipItem(item.slot, itemId);
         // 显示装备提示
         const txt = this.add.text(d.x, d.y - 20, `装备：${item.name}`, {
           fontFamily: 'monospace', fontSize: '12px', color: '#ffcc33',
@@ -501,10 +567,10 @@ export class BattleScene extends Phaser.Scene {
 
     // 4 个技能图标（底部横向）
     const skillKeys: ('Q' | 'W' | 'E' | 'R')[] = ['Q', 'W', 'E', 'R'];
-    const skillLabels = ['居合斩', '旋风斩', '影步', '鬼神斩(Phase3)'];
+    const skillLabels = ['居合斩', '旋风斩', '影步', '鬼神斩'];
     const cx = GAME_WIDTH / 2;
     const spacing = 64;
-    const keys = ['Q', 'E', 'R', 'F'];  // 对应键盘键
+    const keys = ['Q', 'W', 'E', 'R'];  // 对应键盘键
     skillKeys.forEach((k, i) => {
       const x = cx - spacing * 1.5 + i * spacing;
       this.add.rectangle(x, GAME_HEIGHT - 56, 48, 48, 0x222228, 1)
@@ -522,15 +588,15 @@ export class BattleScene extends Phaser.Scene {
     });
 
     // 右上操作提示
-    this.add.text(GAME_WIDTH - 360, 20,
-      '[ WASD / 方向键 ] 移动\n[ 空格 ] 普攻（3 连斩）\n[ Q ] 居合斩   [ E ] 旋风斩   [ R ] 影步\n点击装备可拾取穿戴',
+    this.add.text(GAME_WIDTH - 20, 20,
+      '[ WASD / 方向键 ] 移动   [ 空格 ] 普攻\n[ Q ] 居合斩   [ W ] 旋风斩   [ E ] 影步   [ R ] 鬼神斩\n[ Esc ] 角色面板   [ F ] 区域门',
       { fontFamily: 'monospace', fontSize: '13px', color: '#9aa0a6', align: 'right' },
-    ).setScrollFactor(0).setDepth(100);
+    ).setOrigin(1, 0).setScrollFactor(0).setDepth(100);
 
-    this.add.text(GAME_WIDTH - 360, GAME_HEIGHT - 48,
-      `Phase 2 · MVP 0.2 战斗循环 · 击杀精英鬼将即可胜利`,
+    this.add.text(GAME_WIDTH - 20, GAME_HEIGHT - 48,
+      'Phase 5 · MVP 1.0 · 清完区域后到蓝色门按 F 前进',
       { fontFamily: 'monospace', fontSize: '12px', color: '#6a6a72' },
-    ).setScrollFactor(0).setDepth(100);
+    ).setOrigin(1, 0).setScrollFactor(0).setDepth(100);
   }
 
   private refreshHUD(): void {
@@ -539,20 +605,17 @@ export class BattleScene extends Phaser.Scene {
     this.levelText.setText(`Lv.${s.player.level}  ATK:${s.getEffectiveAtk()}  DEF:${s.getEffectiveDef()}  技能点:${s.player.skillPoints}`);
     this.goldText.setText(`金币: ${s.resources.gold}  击杀: ${this.kills}`);
 
-    // EXP 条
-    const lv = s.player.level;
-    const need = 100 + (lv - 1) * 150;
+    // EXP 条（阈值来自 store 派生的 levelExp）
+    const need = Math.max(1, s.player.levelExp);
     const ratio = Phaser.Math.Clamp(s.player.exp / need, 0, 1);
     const barW = ratio * 196;
     this.expBar.inner.width = barW;
     this.expBar.inner.x = 24 + barW / 2;
 
-    // 4 技能冷却遮罩
-    const cooldowns: Array<[keyof typeof this.skillOverlays, number]> = [
-      ['Q', 5000], ['W', 8000], ['E', 6000], ['R', 30000],
-    ];
-    for (const [key, max] of cooldowns) {
+    // 4 技能冷却遮罩（最大冷却来自技能系统实际值，含成长缩减）
+    for (const key of ['Q', 'W', 'E', 'R'] as const) {
       const remaining = this.skills.remainingMs(key);
+      const max = Math.max(1, this.skills.getMaxCooldown(key));
       const overlay = this.skillOverlays[key] as Phaser.GameObjects.Rectangle;
       if (remaining > 0) {
         overlay.setVisible(true);
@@ -576,7 +639,7 @@ export class BattleScene extends Phaser.Scene {
       fontFamily: 'monospace', fontSize: '16px', color: '#9aa0a6', align: 'center',
     }).setOrigin(0.5).setDepth(202).setScrollFactor(0);
     const btn = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 90,
-      '点击屏幕任意位置重新挑战',
+      '点击屏幕任意位置返回道场',
       { fontFamily: 'monospace', fontSize: '14px', color: '#6a6a72' },
     ).setOrigin(0.5).setDepth(202).setScrollFactor(0);
     this.resultPanel = this.add.container(0, 0, [dim, panel, title, detail, btn]);
@@ -597,7 +660,7 @@ export class BattleScene extends Phaser.Scene {
     detail.setText(
       `击杀: ${this.kills}  总经验: ${this.totalExpEarned}\n` +
       `金币: ${s.resources.gold}  等级: Lv.${s.player.level}\n` +
-      (victory ? '精英鬼将已被封印，返回道场继续冒险！' : '武士倒下了... 整装再来'),
+      (victory ? '区域已肃清，返回道场继续冒险！' : '武士倒下了... 回据点休整再来'),
     );
     useGameStore.getState().setCombatResult({
       victory, kills: this.kills, goldEarned: s.resources.gold,
@@ -606,26 +669,13 @@ export class BattleScene extends Phaser.Scene {
 
   private onResultPanelClick(): void {
     if (!this.resultPanelVisible) return;
-    // 重开
-    useGameStore.getState().resetForBattle();
-    this.resultPanel.setVisible(false);
     this.resultPanelVisible = false;
+    this.resultPanel.setVisible(false);
 
-    for (const e of [...this.enemies]) e.destroy();
-    this.enemies = [];
-    for (const d of this.drops) d.destroy();
-    this.drops = [];
-    this.projectiles = [];
-
-    this.spawnWave();
-    for (const e of this.enemies) this.addCollidersForEnemy(e);
-
-    this.player.x = 160; this.player.y = 160;
-    const body = (this.player as unknown as { body: Phaser.Physics.Arcade.Body }).body;
-    body.setVelocity(0, 0);
-    this.skills.reset();
-
-    this.kills = 0; this.totalExpEarned = 0;
+    // 战败：回据点休整（回满血），不再原地重开
+    useGameStore.getState().restAtHome();
+    useGameStore.getState().setAreaIndex(0);
+    this.scene.start('HomeScene');
   }
 
   // ——————————————— Projectile 系统占位 —— Phase 3 怨灵远程补齐 ———————————————
@@ -694,7 +744,10 @@ export class BattleScene extends Phaser.Scene {
     // 扇形视觉（Graphics + 半透明填充 + 边缘描边，180ms 后淡出）
     const fan = this.add.graphics();
     fan.fillStyle(0xff4444, 0.35);
-    fan.slice(args.x, args.y, args.fanRadius, baseAngle - half, baseAngle + half);
+    fan.slice(
+      args.x, args.y, args.fanRadius,
+      Phaser.Math.DegToRad(baseAngle - half), Phaser.Math.DegToRad(baseAngle + half),
+    );
     fan.fillPath();
     fan.lineStyle(4, 0xff6666, 1);
     fan.strokePath();
@@ -792,57 +845,4 @@ export class BattleScene extends Phaser.Scene {
     void SOUL_DB;
   }
 
-  /** Phase 3：Esc 开关背包面板（模态层 + 暂停游戏循环） */
-  private modalOpen = false;
-  private modalPanel!: Phaser.GameObjects.Container;
-
-  private toggleInventoryModal(): void {
-    if (this.modalOpen) this.closeInventoryModal(); else this.openInventoryModal();
-  }
-
-  private openInventoryModal(): void {
-    this.modalOpen = true;
-    this.game.pause();  // 世界层暂停，技能冷却停止
-    useGameStore.getState().setPaused(true);
-
-    const dim = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.55)
-      .setDepth(300).setScrollFactor(0);
-    const panel = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 720, 480, 0x1a1a22, 1)
-      .setStrokeStyle(2, 0x555560, 1).setDepth(301).setScrollFactor(0);
-    const title = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 210, '背包 / 角色面板（Esc 关闭）', {
-      fontFamily: 'monospace', fontSize: '22px', color: '#e5e5e5', fontStyle: 'bold',
-    }).setOrigin(0.5).setDepth(302).setScrollFactor(0);
-
-    // —— 左侧：属性 ——
-    const s = useGameStore.getState();
-    const soulNames = s.souls.map((id) => SOUL_DB[id]?.name ?? '—').join(' | ') || '（未装备）';
-    const equipNames = Object.entries(s.equipment)
-      .map(([k, v]) => `${k}: ${v ? EQUIPMENT_DB[v]?.name : '—'}`)
-      .join('\n');
-    const attrs = this.add.text(GAME_WIDTH / 2 - 280, GAME_HEIGHT / 2 - 150,
-      `HP: ${s.player.hp} / ${s.player.maxHp}   Lv.${s.player.level}   技能点: ${s.player.skillPoints}\n` +
-      `ATK: ${s.getEffectiveAtk()}   DEF: ${s.getEffectiveDef()}\n` +
-      `金币: ${s.resources.gold}\n\n` +
-      `—— 装备 ——\n${equipNames}\n\n` +
-      `—— 妖魂 ——\n${soulNames}\n\n` +
-      `装备掉落：战斗中点击带颜色框的方形\n` +
-      `妖魂掉落：Phase 3.5 补齐（目前手动装备可调用 store.equipItem）`,
-      { fontFamily: 'monospace', fontSize: '14px', color: '#9aa0a6', lineSpacing: 4 },
-    ).setDepth(302).setScrollFactor(0);
-
-    const info = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 200,
-      `天狗：旋风斩 W 范围 +50%\n酒吞童子：普攻 15% 概率吸血\n镰鼬：影步 E 无敌 +100ms`,
-      { fontFamily: 'monospace', fontSize: '12px', color: '#ffcc33', align: 'center' },
-    ).setOrigin(0.5).setDepth(302).setScrollFactor(0);
-
-    this.modalPanel = this.add.container(0, 0, [dim, panel, title, attrs, info]);
-  }
-
-  private closeInventoryModal(): void {
-    if (!this.modalOpen) return;
-    this.modalOpen = false;
-    this.game.resume();
-    useGameStore.getState().setPaused(false);
-    this.modalPanel.destroy();
-  }
 }

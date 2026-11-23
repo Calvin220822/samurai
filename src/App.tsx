@@ -1,10 +1,15 @@
 import { PhaserCanvas } from '@/react/components/Phaser/PhaserCanvas.js';
+import { GameOverlay } from '@/react/components/GameOverlay.js';
 
 /**
  * 应用根组件。
- * Phase 0 只有 Phaser Canvas，后续 Phase 会在此之上叠加
- * React 模态层（ModalHost）和 React HUD 层。
+ * Phaser Canvas 铺底，React 悬浮层（角色 / 锻造 / 神龛面板）叠加其上。
  */
 export default function App() {
-  return <PhaserCanvas />;
+  return (
+    <div style={{ position: 'absolute', inset: 0 }}>
+      <PhaserCanvas />
+      <GameOverlay />
+    </div>
+  );
 }

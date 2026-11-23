@@ -1,21 +1,29 @@
 /**
  * 单一 Zustand store。
- * Phase 2 扩展：skillPoints / 装备槽 / 基础 ATK / DEF。
- * 敌人列表、战斗事件等运行时引用不进 store，只存玩家可持久化字段。
+ * Phase 5：存档字段（强化 / 技能升级 / 妖魂）+ React UI 面板状态 + 派生属性统一计算。
+ *
+ * 原则：敌人列表、战斗事件等运行时引用不进 store，只存玩家可持久化字段。
  */
 
 import { create } from 'zustand';
-import type { SlotId } from '@/phaser/data/equipment.js';
+import { EQUIPMENT_DB, type SlotId } from '@/phaser/data/equipment.js';
+import {
+  EXP_TO_LEVEL, LEVEL_UP_ATK_GAIN, LEVEL_UP_DEF_GAIN, LEVEL_UP_HP_GAIN, PLAYER_START_HP,
+} from '@/phaser/config/Constants.js';
+
+export type SkillId = 'Q' | 'W' | 'E' | 'R';
+export type UiPanel = 'none' | 'character' | 'build' | 'shrine';
 
 export interface PlayerState {
   hp: number;
   maxHp: number;
   level: number;
   exp: number;
-  levelExp: number;         // 当前等级升级所需累计经验（由 LevelSystem 写入）
+  levelExp: number;
   skillPoints: number;
-  baseAtk: number;          // 从 50 起，每级 +5
-  baseDef: number;           // 从 10 起，每级 +1
+  baseAtk: number;
+  baseDef: number;
+  bonusMaxHp: number;      // 神龛祈祷累积的额外最大 HP
 }
 
 export interface ResourceState {
@@ -27,6 +35,9 @@ export interface ResourceState {
 
 export type SceneKey = 'BootScene' | 'HomeScene' | 'BattleScene' | 'BossScene';
 export type EquipmentSlots = Record<SlotId, string | null>;
+export type Enhancements = Record<SlotId, number>;
+export type SkillUpgrade = { a: number; b: number };
+export type SkillUpgrades = Record<SkillId, SkillUpgrade>;
 
 export type CombatResult = null | {
   victory: boolean;
@@ -41,75 +52,124 @@ export interface SpendResourcesInput {
   soulShards?: number;
 }
 
+export interface SavePayload {
+  version: number;
+  savedAt: number;
+  player: PlayerState;
+  resources: ResourceState;
+  equipment: EquipmentSlots;
+  souls: string[];
+  areaIndex: number;
+  maxAreaCleared: number;
+  enhancements: Enhancements;
+  skillUpgrades: SkillUpgrades;
+}
+
+export const MAX_ENHANCE_LEVEL = 5;
+export const MAX_SKILL_LEVEL = 3;
+
+export function enhanceCost(level: number): { gold: number; iron: number } {
+  return { gold: 60 + level * 40, iron: 5 + level * 3 };
+}
+
 interface GameStoreState {
   currentScene: SceneKey | null;
   isPaused: boolean;
+  uiPanel: UiPanel;
   combatResult: CombatResult;
 
   player: PlayerState;
   resources: ResourceState;
   equipment: EquipmentSlots;
-  souls: string[];               // 3 槽位妖魂，Phase 3
+  souls: string[];
+  enhancements: Enhancements;
+  skillUpgrades: SkillUpgrades;
 
-  areaIndex: number;              // Phase 4：当前关卡区域 0–3（AREAS 数组索引）
-  maxAreaCleared: number;         // Phase 4：已通关最高区域（用于存档回跳）
+  areaIndex: number;
+  maxAreaCleared: number;
+  bossDefeated: boolean;
 
   // —— Actions ——
   setScene: (scene: SceneKey | null) => void;
   setPaused: (paused: boolean) => void;
-  togglePause: () => void;
+  setUiPanel: (panel: UiPanel) => void;
   setPlayerHp: (hp: number) => void;
   damagePlayer: (amount: number) => void;
   addGold: (amount: number) => void;
   addExp: (amount: number) => void;
   setCombatResult: (result: CombatResult) => void;
   equipItem: (slot: SlotId, itemId: string | null) => void;
-  resetForBattle: () => void;
+  resetCombat: () => void;
+  restAtHome: () => void;
   setAreaIndex: (idx: number) => void;
   spendResources: (delta: SpendResourcesInput) => void;
   grantSkillPoint: () => void;
   prayMaxHp: () => void;
   addSoulShards: (n: number) => void;
   setSouls: (souls: string[]) => void;
+  enhanceSlot: (slot: SlotId) => boolean;
+  upgradeSkill: (skill: SkillId, branch: 'a' | 'b') => boolean;
+  recomputeDerivedStats: () => void;
+  setBossDefeated: (v: boolean) => void;
+  hydrate: (data: SavePayload) => void;
+  toSavePayload: () => SavePayload;
 
-  // —— 派生：有效 ATK / DEF / 当前等级经验阈值 ——
+  // —— 派生 ——
   getEffectiveAtk: () => number;
   getEffectiveDef: () => number;
+  isUiOpen: () => boolean;
+  skillMods: (skill: SkillId) => { a: number; b: number };
 }
 
 const initPlayer: PlayerState = {
-  hp: 500, maxHp: 500,
-  level: 1, exp: 0, levelExp: 100,
+  hp: PLAYER_START_HP, maxHp: PLAYER_START_HP,
+  level: 1, exp: 0, levelExp: EXP_TO_LEVEL(1),
   skillPoints: 0,
   baseAtk: 50, baseDef: 10,
+  bonusMaxHp: 0,
 };
 
 const initEquipment: EquipmentSlots = {
   weapon: null, helmet: null, armor: null, gloves: null, boots: null, accessory: null,
 };
 
+const initEnhancements: Enhancements = {
+  weapon: 0, helmet: 0, armor: 0, gloves: 0, boots: 0, accessory: 0,
+};
+
+const initSkillUpgrades: SkillUpgrades = {
+  Q: { a: 0, b: 0 }, W: { a: 0, b: 0 }, E: { a: 0, b: 0 }, R: { a: 0, b: 0 },
+};
+
 export const useGameStore = create<GameStoreState>((set, get) => ({
   currentScene: null,
   isPaused: false,
+  uiPanel: 'none',
   combatResult: null,
 
   player: { ...initPlayer },
   resources: { gold: 200, wood: 30, iron: 10, soulShards: 5 },
   equipment: { ...initEquipment },
-  souls: [],  // Phase 3: 3 槽位妖魂，初始空
+  souls: [],
+  enhancements: { ...initEnhancements },
+  skillUpgrades: {
+    Q: { ...initSkillUpgrades.Q }, W: { ...initSkillUpgrades.W },
+    E: { ...initSkillUpgrades.E }, R: { ...initSkillUpgrades.R },
+  },
 
   areaIndex: 0,
   maxAreaCleared: 0,
+  bossDefeated: false,
 
   setScene: (scene) => set({ currentScene: scene }),
   setPaused: (paused) => set({ isPaused: paused }),
-  togglePause: () => set((s) => ({ isPaused: !s.isPaused })),
+  setUiPanel: (panel) => set({ uiPanel: panel }),
+
   setPlayerHp: (hp) =>
     set((s) => ({ player: { ...s.player, hp: Math.max(0, Math.min(hp, s.player.maxHp)) } })),
+
   damagePlayer: (amount) =>
-    set((s) => ({
-      player: { ...s.player, hp: Math.max(0, s.player.hp - amount) },
-    })),
+    set((s) => ({ player: { ...s.player, hp: Math.max(0, s.player.hp - amount) } })),
 
   addGold: (amount) =>
     set((s) => ({ resources: { ...s.resources, gold: s.resources.gold + amount } })),
@@ -119,112 +179,169 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
 
   setCombatResult: (result) => set({ combatResult: result }),
 
-  equipItem: (slot, itemId) =>
-    set((s) => ({ equipment: { ...s.equipment, [slot]: itemId } })),
+  equipItem: (slot, itemId) => {
+    set((s) => ({ equipment: { ...s.equipment, [slot]: itemId } }));
+    get().recomputeDerivedStats();
+  },
 
-  resetForBattle: () =>
-    set((s) => ({
-      player: { ...s.player, hp: s.player.maxHp },
-      combatResult: null,
-    })),
+  /** 进入战斗场景时清理上一场结果，不回血 */
+  resetCombat: () => set({ combatResult: null }),
+
+  /** 据点休息：回满 HP */
+  restAtHome: () =>
+    set((s) => ({ player: { ...s.player, hp: s.player.maxHp }, combatResult: null })),
 
   setAreaIndex: (idx) =>
-    set((s) => ({
-      areaIndex: idx,
-      maxAreaCleared: Math.max(s.maxAreaCleared, idx),
-    })),
+    set((s) => ({ areaIndex: idx, maxAreaCleared: Math.max(s.maxAreaCleared, idx) })),
 
   spendResources: (delta) =>
     set((s) => ({
       resources: {
-        gold: s.resources.gold - (delta.gold ?? 0),
-        wood: s.resources.wood - (delta.wood ?? 0),
-        iron: s.resources.iron - (delta.iron ?? 0),
-        soulShards: s.resources.soulShards - (delta.soulShards ?? 0),
+        gold: Math.max(0, s.resources.gold - (delta.gold ?? 0)),
+        wood: Math.max(0, s.resources.wood - (delta.wood ?? 0)),
+        iron: Math.max(0, s.resources.iron - (delta.iron ?? 0)),
+        soulShards: Math.max(0, s.resources.soulShards - (delta.soulShards ?? 0)),
       },
     })),
 
   grantSkillPoint: () =>
-    set((s) => ({
-      player: { ...s.player, skillPoints: s.player.skillPoints + 1 },
-    })),
+    set((s) => ({ player: { ...s.player, skillPoints: s.player.skillPoints + 1 } })),
 
-  prayMaxHp: () =>
-    set((s) => ({
-      player: {
-        ...s.player,
-        maxHp: s.player.maxHp + 20,
-        hp: s.player.hp + 20,
-      },
-    })),
+  prayMaxHp: () => {
+    set((s) => ({ player: { ...s.player, bonusMaxHp: s.player.bonusMaxHp + 20 } }));
+    get().recomputeDerivedStats();
+  },
 
   addSoulShards: (n) =>
-    set((s) => ({
-      resources: { ...s.resources, soulShards: s.resources.soulShards + n },
-    })),
+    set((s) => ({ resources: { ...s.resources, soulShards: s.resources.soulShards + n } })),
 
   setSouls: (souls) => set({ souls }),
 
-  getEffectiveAtk: () => {
+  enhanceSlot: (slot) => {
+    const s = get();
+    const level = s.enhancements[slot];
+    if (!s.equipment[slot] || level >= MAX_ENHANCE_LEVEL) return false;
+    const cost = enhanceCost(level);
+    if (s.resources.gold < cost.gold || s.resources.iron < cost.iron) return false;
+    set((st) => ({
+      resources: {
+        ...st.resources,
+        gold: st.resources.gold - cost.gold,
+        iron: st.resources.iron - cost.iron,
+      },
+      enhancements: { ...st.enhancements, [slot]: level + 1 },
+    }));
+    get().recomputeDerivedStats();
+    return true;
+  },
+
+  upgradeSkill: (skill, branch) => {
+    const s = get();
+    if (s.player.skillPoints <= 0) return false;
+    const cur = s.skillUpgrades[skill];
+    if (cur[branch] >= MAX_SKILL_LEVEL) return false;
+    set((st) => ({
+      player: { ...st.player, skillPoints: st.player.skillPoints - 1 },
+      skillUpgrades: {
+        ...st.skillUpgrades,
+        [skill]: { ...st.skillUpgrades[skill], [branch]: cur[branch] + 1 },
+      },
+    }));
+    return true;
+  },
+
+  recomputeDerivedStats: () => {
     const { player, equipment } = get();
-    let atk = player.baseAtk;
+    let hpBonus = 0;
     for (const id of Object.values(equipment)) {
       if (!id) continue;
-      const e = (globalThis as any).__equipmentDB?.[id];
-      if (e?.baseAtk) atk += e.baseAtk;
+      const item = EQUIPMENT_DB[id];
+      if (item?.baseHp) hpBonus += item.baseHp;
+    }
+    const maxHp = PLAYER_START_HP + LEVEL_UP_HP_GAIN * (player.level - 1) + player.bonusMaxHp + hpBonus;
+    set((s) => ({
+      player: {
+        ...s.player,
+        maxHp,
+        hp: Math.min(maxHp, Math.max(1, s.player.hp)),
+        baseAtk: 50 + LEVEL_UP_ATK_GAIN * (s.player.level - 1),
+        baseDef: 10 + LEVEL_UP_DEF_GAIN * (s.player.level - 1),
+        levelExp: EXP_TO_LEVEL(s.player.level),
+      },
+    }));
+  },
+
+  setBossDefeated: (v) => set({ bossDefeated: v }),
+
+  hydrate: (data) => {
+    set({
+      player: { ...initPlayer, ...data.player },
+      resources: { ...data.resources },
+      equipment: { ...initEquipment, ...data.equipment },
+      souls: [...(data.souls ?? [])],
+      enhancements: { ...initEnhancements, ...data.enhancements },
+      skillUpgrades: {
+        Q: { ...initSkillUpgrades.Q, ...data.skillUpgrades?.Q },
+        W: { ...initSkillUpgrades.W, ...data.skillUpgrades?.W },
+        E: { ...initSkillUpgrades.E, ...data.skillUpgrades?.E },
+        R: { ...initSkillUpgrades.R, ...data.skillUpgrades?.R },
+      },
+      areaIndex: data.areaIndex ?? 0,
+      maxAreaCleared: data.maxAreaCleared ?? 0,
+    });
+    get().recomputeDerivedStats();
+  },
+
+  toSavePayload: () => {
+    const s = get();
+    return {
+      version: 1,
+      savedAt: Date.now(),
+      player: { ...s.player },
+      resources: { ...s.resources },
+      equipment: { ...s.equipment },
+      souls: [...s.souls],
+      areaIndex: s.areaIndex,
+      maxAreaCleared: s.maxAreaCleared,
+      enhancements: { ...s.enhancements },
+      skillUpgrades: {
+        Q: { ...s.skillUpgrades.Q }, W: { ...s.skillUpgrades.W },
+        E: { ...s.skillUpgrades.E }, R: { ...s.skillUpgrades.R },
+      },
+    };
+  },
+
+  getEffectiveAtk: () => {
+    const { player, equipment, enhancements } = get();
+    let atk = player.baseAtk;
+    for (const [slot, id] of Object.entries(equipment)) {
+      if (!id) continue;
+      const item = EQUIPMENT_DB[id];
+      if (item?.baseAtk) atk += item.baseAtk;
+      atk += (enhancements[slot as SlotId] ?? 0) * 2;
     }
     return atk;
   },
 
   getEffectiveDef: () => {
-    const { player, equipment } = get();
+    const { player, equipment, enhancements } = get();
     let def = player.baseDef;
-    for (const id of Object.values(equipment)) {
+    for (const [slot, id] of Object.entries(equipment)) {
       if (!id) continue;
-      const e = (globalThis as any).__equipmentDB?.[id];
-      if (e?.baseDef) def += e.baseDef;
+      const item = EQUIPMENT_DB[id];
+      if (item?.baseDef) def += item.baseDef;
+      def += (enhancements[slot as SlotId] ?? 0) * 2;
     }
     return def;
   },
+
+  isUiOpen: () => get().uiPanel !== 'none',
+
+  skillMods: (skill) => {
+    const u = get().skillUpgrades[skill];
+    return { a: u.a, b: u.b };
+  },
 }));
-
-// 让 store 能 import EQUIPMENT_DB 但避免循环依赖：这里用显式赋值
-import { EQUIPMENT_DB } from '@/phaser/data/equipment.js';
-(globalThis as any).__equipmentDB = EQUIPMENT_DB;
-
-/** 装备后，玩家 HP / ATK / DEF 自动更新 —— 由 LevelSystem 和 BattleScene 监听 */
-export function applyEquipmentStatDelta(_slot: SlotId, oldId: string | null, newId: string | null): void {
-  const store = useGameStore.getState();
-  const { player } = store;
-  let hpDelta = 0, atkDelta = 0, defDelta = 0;
-  if (oldId) {
-    const old = EQUIPMENT_DB[oldId];
-    if (old?.baseHp) hpDelta -= old.baseHp;
-    if (old?.baseAtk) atkDelta -= old.baseAtk;
-    if (old?.baseDef) defDelta -= old.baseDef;
-  }
-  if (newId) {
-    const nw = EQUIPMENT_DB[newId];
-    if (nw?.baseHp) hpDelta += nw.baseHp;
-    if (nw?.baseAtk) atkDelta += nw.baseAtk;
-    if (nw?.baseDef) defDelta += nw.baseDef;
-  }
-  // 先重置 baseAtk/baseDef 为 level 原始值，然后全部装备累加
-  const level = player.level;
-  const newBaseAtk = 50 + (level - 1) * 5;
-  const newBaseDef = 10 + (level - 1) * 1;
-  const newMaxHp = 500 + (level - 1) * 40;
-  useGameStore.setState((s) => ({
-    player: {
-      ...s.player,
-      baseAtk: newBaseAtk,
-      baseDef: newBaseDef,
-      maxHp: newMaxHp,
-      hp: Math.min(newMaxHp, Math.max(1, s.player.hp + hpDelta)),
-    },
-  }));
-  void atkDelta; void defDelta;
-}
 
 /** Phaser 代码侧（非 React 组件）读取 store 的便捷函数 */
 export function getGameStore() {
