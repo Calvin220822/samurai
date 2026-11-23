@@ -3,11 +3,11 @@ import {
   PLAYER_ACCENT,
   PLAYER_ATTACK_COOLDOWN_MS,
   PLAYER_ATTACK_HIT_FRAME,
-  PLAYER_ATTACK_DAMAGE,
   PLAYER_COLOR,
   PLAYER_RADIUS,
   PLAYER_SPEED,
   PLAYER_SWORD_COLOR,
+  SKILL_E_INVULN_MS,
 } from '../config/Constants.js';
 import { EVT, EventBus } from '../core/EventBus.js';
 import type { SkillSystem } from '../systems/SkillSystem.js';
@@ -16,20 +16,19 @@ import { useGameStore } from '@/store/gameStore.js';
 type PlayerState = 'IDLE' | 'MOVING' | 'ATTACKING' | 'DYING';
 
 /**
- * 武士主角（Phase 1 版本）。
+ * 武士主角（Phase 2 版本）。
  *
- * - 普攻 3 连斩状态机：IDLE → ATTACKING → IDLE
- * - 攻击期间锁移动
- * - FIRE (SPACE) 触发普攻；Q 触发 SkillSystem.castQ
- * - 生效帧 emit 'player:attack-hit'，BattleScene 监听做矩形判定
+ * Phase 2 新增：
+ * - W 键触发旋风斩 / E 键触发影步
+ * - 无敌帧（影步期间），敌人攻击期间玩家若处于 invuln 可规避伤害
+ * - 受伤时短暂红闪
+ * - 普攻伤害从 store.getEffectiveAtk() 动态取
  */
 export class Player extends Phaser.GameObjects.Container {
-  // —— 视觉 ——
   private bodyGfx!: Phaser.GameObjects.Graphics;
   private swordGfx!: Phaser.GameObjects.Graphics;
   private facing: 'left' | 'right' = 'right';
 
-  // —— 战斗状态（改名避免与基类 GameObject.state 冲突）——
   private playerState: PlayerState = 'IDLE';
   private attackCombo = 0;
   private attackTimer = 0;
@@ -37,14 +36,16 @@ export class Player extends Phaser.GameObjects.Container {
   private attackCd = 0;
   private comboReset = 0;
 
-  // —— 输入键（改名避免与基类 Container.input 冲突）——
+  private invulnUntil = 0;             // 毫秒时间戳，期间免疫伤害
+  private hurtFlashUntil = 0;
+
   private kbd!: {
     up: Phaser.Input.Keyboard.Key; down: Phaser.Input.Keyboard.Key;
     left: Phaser.Input.Keyboard.Key; right: Phaser.Input.Keyboard.Key;
     upArrow: Phaser.Input.Keyboard.Key; downArrow: Phaser.Input.Keyboard.Key;
     leftArrow: Phaser.Input.Keyboard.Key; rightArrow: Phaser.Input.Keyboard.Key;
     fire: Phaser.Input.Keyboard.Key;
-    q: Phaser.Input.Keyboard.Key;
+    skillQ: Phaser.Input.Keyboard.Key; skillW: Phaser.Input.Keyboard.Key; skillE: Phaser.Input.Keyboard.Key;
   };
   private fireWasDown = false;
   private skills: SkillSystem;
@@ -68,14 +69,18 @@ export class Player extends Phaser.GameObjects.Container {
 
   private registerInput(scene: Phaser.Scene) {
     const kb = scene.input.keyboard!;
+    // WASD / 方向键负责移动；Q / E / R 负责技能（与架构文档一致）
     return {
       up: kb.addKey('W'), down: kb.addKey('S'),
       left: kb.addKey('A'), right: kb.addKey('D'),
       upArrow: kb.addKey('UP'), downArrow: kb.addKey('DOWN'),
       leftArrow: kb.addKey('LEFT'), rightArrow: kb.addKey('RIGHT'),
-      fire: kb.addKey('SPACE'), q: kb.addKey('Q'),
+      fire: kb.addKey('SPACE'),
+      skillQ: kb.addKey('Q'), skillW: kb.addKey('E'), skillE: kb.addKey('R'),
     };
   }
+
+  // 删除错误的 registerKeyExtras —— 用正确的键位即可
 
   private createGraphics(): void {
     this.bodyGfx = this.scene.add.graphics();
@@ -105,9 +110,20 @@ export class Player extends Phaser.GameObjects.Container {
     }
   }
 
-  update(_time: number, deltaMs: number): void {
+  /** 每帧 */
+  update(timeMs: number, deltaMs: number): void {
+    // —— 受伤红闪 ——
+    this.bodyGfx.clear();
+    const flash = timeMs < this.hurtFlashUntil;
+    this.bodyGfx.fillStyle(flash ? 0xffaaaa : PLAYER_COLOR, 1);
+    this.bodyGfx.fillRoundedRect(-14, -22, 28, 44, 6);
+    this.bodyGfx.fillStyle(PLAYER_ACCENT, 1);
+    this.bodyGfx.fillTriangle(-14, -22, 14, -22, 0, -36);
+    this.bodyGfx.fillStyle(0x888888, 1);
+    this.bodyGfx.fillRoundedRect(-16, -24, 32, 4, 2);
+
     if (this.playerState !== 'DYING') {
-      this.handleQ();
+      this.handleSkills();
       this.handleFire();
     }
 
@@ -121,11 +137,33 @@ export class Player extends Phaser.GameObjects.Container {
     if (useGameStore.getState().player.hp <= 0 && this.playerState !== 'DYING') this.die();
   }
 
-  private handleQ(): void {
-    if (Phaser.Input.Keyboard.JustDown(this.kbd.q)) {
+  /** Phase 2 新：技能键 Q / E / R 触发三种技能 */
+  private handleSkills(): void {
+    if (Phaser.Input.Keyboard.JustDown(this.kbd.skillQ)) {
       this.skills.castQ(this);
       if (this.playerState === 'ATTACKING') this.playerState = 'MOVING';
     }
+    if (Phaser.Input.Keyboard.JustDown(this.kbd.skillW)) {
+      this.skills.castW(this);
+    }
+    if (Phaser.Input.Keyboard.JustDown(this.kbd.skillE)) {
+      const mv = this.currentMoveDirection();
+      this.skills.castE(this, mv);
+      this.invulnUntil = this.scene.time.now + SKILL_E_INVULN_MS;
+    }
+  }
+
+  /** 当前按键移动方向；用于影步无移动时 fallback 到 facing */
+  private currentMoveDirection(): { dx: number; dy: number } {
+    const K = this.kbd;
+    const left = K.left.isDown || K.leftArrow.isDown;
+    const right = K.right.isDown || K.rightArrow.isDown;
+    const up = K.up.isDown || K.upArrow.isDown;
+    const down = K.down.isDown || K.downArrow.isDown;
+    let dx = (right ? 1 : 0) - (left ? 1 : 0);
+    let dy = (down ? 1 : 0) - (up ? 1 : 0);
+    if (dx !== 0 && dy !== 0) { dx *= 0.7071; dy *= 0.7071; }
+    return { dx, dy };
   }
 
   private handleFire(): void {
@@ -142,13 +180,14 @@ export class Player extends Phaser.GameObjects.Container {
     (this.body as Phaser.Physics.Arcade.Body).setVelocity(0, 0);
   }
 
-  private doAttacking(_deltaMs: number): void {
-    this.attackTimer -= _deltaMs;
+  private doAttacking(deltaMs: number): void {
+    this.attackTimer -= deltaMs;
     if (!this.attackHitFrame && (260 - this.attackTimer) >= PLAYER_ATTACK_HIT_FRAME) {
       this.attackHitFrame = true;
       this.drawSword(true);
       this.scene.events.emit('player:attack-hit', {
-        x: this.x, y: this.y, facing: this.facing, combo: this.attackCombo,
+        x: this.x, y: this.y, facing: this.facing,
+        damage: useGameStore.getState().getEffectiveAtk(),
       });
     }
     if (this.attackTimer <= 0) {
@@ -159,19 +198,11 @@ export class Player extends Phaser.GameObjects.Container {
   }
 
   private doMoving(): void {
-    const K = this.kbd;
-    const left = K.left.isDown || K.leftArrow.isDown;
-    const right = K.right.isDown || K.rightArrow.isDown;
-    const up = K.up.isDown || K.upArrow.isDown;
-    const down = K.down.isDown || K.downArrow.isDown;
-    let dx = (right ? 1 : 0) - (left ? 1 : 0);
-    let dy = (down ? 1 : 0) - (up ? 1 : 0);
-    if (dx !== 0 && dy !== 0) { dx *= 0.7071; dy *= 0.7071; }
-
-    (this.body as Phaser.Physics.Arcade.Body).setVelocity(dx * PLAYER_SPEED, dy * PLAYER_SPEED);
-    if (dx < 0) this.face('left'); else if (dx > 0) this.face('right');
-    this.playerState = (dx !== 0 || dy !== 0) ? 'MOVING' : 'IDLE';
-    if (dx !== 0 || dy !== 0) EventBus.emit(EVT.PLAYER_MOVE, { x: this.x, y: this.y });
+    const mv = this.currentMoveDirection();
+    (this.body as Phaser.Physics.Arcade.Body).setVelocity(mv.dx * PLAYER_SPEED, mv.dy * PLAYER_SPEED);
+    if (mv.dx < 0) this.face('left');
+    else if (mv.dx > 0) this.face('right');
+    this.playerState = (mv.dx !== 0 || mv.dy !== 0) ? 'MOVING' : 'IDLE';
   }
 
   private face(dir: 'left' | 'right'): void {
@@ -180,10 +211,19 @@ export class Player extends Phaser.GameObjects.Container {
     this.bodyGfx.setScale(dir === 'right' ? 1 : -1, 1);
   }
 
+  // —— 公共 API ——
   getFacing(): 'left' | 'right' { return this.facing; }
   isAttacking(): boolean { return this.playerState === 'ATTACKING'; }
   getComboIndex(): number { return this.attackCombo; }
-  getAttackDamage(): number { return PLAYER_ATTACK_DAMAGE; }
+  isInvulnerable(time: number): boolean { return time < this.invulnUntil; }
+
+  /** 由 BattleScene 在受伤前调用；返回 true 代表实际扣血 */
+  takeHit(damage: number, time: number): boolean {
+    if (time < this.invulnUntil) return false;  // 影步规避
+    this.hurtFlashUntil = time + 120;
+    useGameStore.getState().damagePlayer(damage);
+    return true;
+  }
 
   private die(): void {
     this.playerState = 'DYING';
