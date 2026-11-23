@@ -112,7 +112,7 @@ export abstract class Enemy extends Phaser.GameObjects.Container {
     }
   }
 
-  private doChase(dx: number, dy: number, dist: number): void {
+  protected doChase(dx: number, dy: number, dist: number): void {
     const body = this.body as Phaser.Physics.Arcade.Body;
     if (dist > this.attackRange) {
       const nx = dx / (dist || 1), ny = dy / (dist || 1);
