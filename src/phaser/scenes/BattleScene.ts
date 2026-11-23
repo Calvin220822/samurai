@@ -365,6 +365,7 @@ export class BattleScene extends Phaser.Scene {
 
     // EXP 条
     const barY = 110;
+    this.expBar = { outer: null as any, inner: null as any };
     this.expBar.outer = this.add.rectangle(120, barY, 200, 14, 0x22222a, 0.8)
       .setStrokeStyle(1, 0x55555f, 1).setScrollFactor(0).setDepth(100);
     this.expBar.inner = this.add.rectangle(20, barY, 0, 10, 0x66cc88, 1)
