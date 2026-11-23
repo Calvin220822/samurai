@@ -503,21 +503,8 @@ export class BattleScene extends Phaser.Scene {
   }
 
   // ——————————————— Projectile 系统占位 —— Phase 3 怨灵远程补齐 ———————————————
-  private readonly _projectilePlaceholder = {
-    add: (_x: number, _y: number, _dx: number, _dy: number, _dmg: number) => {
-      const speed = 220;
-      const body = this.physics.add.body(_x, _y, 0, 0) as unknown as Phaser.Physics.Arcade.Body;
-      body.setCircle(6);
-      body.setAllowGravity(false);
-      body.setVelocity(_dx * speed, _dy * speed);
-      const g = this.add.graphics();
-      g.fillStyle(0x6ab0ff, 1);
-      g.fillCircle(_x, _y, 6);
-      (body as any)._graphics = g;
-      this.projectiles.push({ x: _x, y: _y, dx: _dx, dy: _dy, life: 3000, body, dmg: _dmg });
-    },
-  };
-  private readonly __unusedPlaceholder = this._projectilePlaceholder;
+  // Phase 2 怨灵远程攻击未启用，updateProjectiles / _projectilePlaceholder 留待 Phase 3 实现
+  // Wraith 的 windup 期间仍只近身物理攻击。后续改远程时直接解开这里即可。
 
   private updateProjectiles(_timeMs: number, deltaMs: number): void {
     if (this.projectiles.length === 0) return;
