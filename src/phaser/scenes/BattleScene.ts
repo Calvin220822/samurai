@@ -36,6 +36,12 @@ export class BattleScene extends Phaser.Scene {
   private skills = new SkillSystem();
   private levels = new LevelSystem();
 
+  private areaIndex = 0;
+  private areaClear = false;
+  private areaDoorVisible = false;
+  private areaDoorText!: Phaser.GameObjects.Text;
+  private areaDoorRect!: Phaser.GameObjects.Rectangle;
+
   // —— HUD ——
   private hpText!: Phaser.GameObjects.Text;
   private levelText!: Phaser.GameObjects.Text;
@@ -54,8 +60,13 @@ export class BattleScene extends Phaser.Scene {
 
   create(): void {
     useGameStore.getState().resetForBattle();
-    useGameStore.getState().setScene('battle');
+    useGameStore.getState().setScene('BattleScene');
     this.kills = 0; this.totalExpEarned = 0;
+    this.areaClear = false; this.areaDoorVisible = false;
+
+    // 读取上一 scene 传入的 areaIndex（HomeScene 出征时传 { areaIndex: 0 }）
+    const data = (this.scene.settings.data ?? {}) as { areaIndex?: number };
+    this.areaIndex = Math.max(0, Math.min(3, data.areaIndex ?? 0));
 
     this.drawGround();
     this.buildWalls();
@@ -63,6 +74,7 @@ export class BattleScene extends Phaser.Scene {
     this.spawnWave();
     this.createHUD();
     this.createResultPanel();
+    this.createAreaDoor();
 
     // Colliders
     this.physics.add.collider(this.player as unknown as any, this.walls);
@@ -86,6 +98,10 @@ export class BattleScene extends Phaser.Scene {
     this.input.on('pointerdown', this.onResultPanelClick, this);
     this.input.on('pointerdown', this.onDropClick, this);
     this.input.keyboard?.on('keydown-ESC', this.toggleInventoryModal, this);
+    this.input.keyboard?.on('keydown-F', this.onAreaDoorInteract, this);
+
+    // 区域 Banner 动画
+    this.showAreaBanner();
   }
 
   shutdown(): void {
@@ -152,12 +168,104 @@ export class BattleScene extends Phaser.Scene {
 
   private spawnWave(): void {
     this.enemies = [];
-    // 波次：2 赤鬼 + 1 骸骨武士 + 1 怨灵 + 1 精英鬼将
-    this.enemies.push(new RedOni(this, 640, 300));
-    this.enemies.push(new RedOni(this, 860, 520));
-    this.enemies.push(new BoneSamurai(this, 520, 600));
-    this.enemies.push(new Wraith(this, 1100, 280));
-    this.enemies.push(new EliteGeneral(this, 950, 150));
+    // 按 areaIndex 刷不同敌人（4 个区域，从易到难）
+    switch (this.areaIndex) {
+      case 0: // 枫隐村村门口
+        this.enemies.push(new RedOni(this, 640, 300));
+        this.enemies.push(new RedOni(this, 860, 520));
+        this.enemies.push(new BoneSamurai(this, 520, 600));
+        break;
+      case 1: // 废弃竹林
+        this.enemies.push(new RedOni(this, 640, 300));
+        this.enemies.push(new Wraith(this, 1100, 280));
+        this.enemies.push(new Wraith(this, 240, 500));
+        this.enemies.push(new BoneSamurai(this, 520, 600));
+        break;
+      case 2: // 神社前庭（含精英）
+        this.enemies.push(new RedOni(this, 400, 200));
+        this.enemies.push(new Wraith(this, 1100, 280));
+        this.enemies.push(new BoneSamurai(this, 520, 600));
+        this.enemies.push(new EliteGeneral(this, 950, 150));
+        break;
+      case 3: // 地下神社（精英 → 触发 Boss）
+        this.enemies.push(new EliteGeneral(this, 950, 300));
+        this.enemies.push(new RedOni(this, 400, 500));
+        break;
+    }
+    this.enemies.forEach((e) => this.addCollidersForEnemy(e));
+  }
+
+  // —— 区域门：清完怪才出现，按 F → 下一区域 / 跳 Boss ——
+  private createAreaDoor(): void {
+    this.areaDoorRect = this.add.rectangle(1160, 600, 40, 64, 0x333344)
+      .setStrokeStyle(3, 0x88ccff, 1).setVisible(false);
+    this.areaDoorText = this.add.text(1160, 640, '', {
+      fontSize: '14px', color: '#88ccff', fontStyle: 'bold',
+    }).setOrigin(0.5).setVisible(false);
+  }
+
+  private showAreaDoor(): void {
+    if (this.areaDoorVisible) return;
+    this.areaDoorVisible = true;
+    const isLast = this.areaIndex >= 3;
+    this.areaDoorText.setText(isLast ? '→ 地下神社深处（Boss）' : '→ 下一区域').setVisible(true);
+    this.areaDoorRect.setVisible(true);
+    // 发光脉冲
+    this.tweens.add({ targets: this.areaDoorRect, alpha: 0.5, yoyo: true, repeat: -1, duration: 800 });
+  }
+
+  private onAreaDoorInteract(): void {
+    if (!this.areaDoorVisible || this.scene.isPaused()) return;
+    const px = this.player.x, py = this.player.y;
+    const dx = px - this.areaDoorRect.x;
+    const dy = py - this.areaDoorRect.y;
+    if (Math.hypot(dx, dy) > 80) return;  // 没靠近门
+    const nextArea = this.areaIndex + 1;
+    if (nextArea > 3) {
+      // 最后区域清完 → 跳 Boss
+      useGameStore.getState().addSoulShards(10);
+      this.scene.start('BossScene');
+    } else {
+      useGameStore.getState().setAreaIndex(nextArea);
+      this.scene.restart({ areaIndex: nextArea });
+    }
+  }
+
+  private showAreaBanner(): void {
+    const areaNames = ['枫隐村村门口', '废弃竹林', '神社前庭', '地下神社'];
+    const name = areaNames[this.areaIndex] ?? '未知区域';
+    const banner = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 100, name, {
+      fontSize: '36px', color: '#ffffff', fontStyle: 'bold',
+      stroke: '#000000', strokeThickness: 5,
+    }).setOrigin(0.5).setAlpha(0);
+    this.tweens.add({
+      targets: banner, alpha: 1, duration: 500, yoyo: true, hold: 1000,
+      onComplete: () => banner.destroy(),
+    });
+  }
+
+  private checkAreaClear(): void {
+    if (this.areaClear) return;
+    const alive = this.enemies.filter((e) => !e.isDead());
+    if (alive.length === 0) {
+      this.areaClear = true;
+      this.showAreaDoor();
+      // 清完精英也直接给胜利反馈
+      const hadElite = this.areaIndex >= 2;
+      if (hadElite) {
+        this.addFloatingText(GAME_WIDTH / 2, GAME_HEIGHT / 2, '区域清完！', 0x88ff88);
+      }
+    }
+  }
+
+  private addFloatingText(x: number, y: number, text: string, color: number): void {
+    const t = this.add.text(x, y, text, {
+      fontSize: '28px', color: `#${color.toString(16).padStart(6, '0')}`,
+      fontStyle: 'bold', stroke: '#000000', strokeThickness: 4,
+    }).setOrigin(0.5);
+    this.tweens.add({
+      targets: t, y: y - 60, alpha: 0, duration: 1200, onComplete: () => t.destroy(),
+    });
   }
 
   private addCollidersForEnemy(e: Enemy): void {
@@ -258,30 +366,31 @@ export class BattleScene extends Phaser.Scene {
 
     // 经验（按敌人类型）
     let expGained = ONI_EXP;
+    let soulShardsGained = 0;
     if (args.enemy instanceof BoneSamurai) expGained = BONE_EXP;
     else if (args.enemy instanceof Wraith) expGained = WRAITH_EXP;
-    else if (args.enemy instanceof EliteGeneral) expGained = ELITE_EXP;
+    else if (args.enemy instanceof EliteGeneral) { expGained = ELITE_EXP; soulShardsGained = 5; }
+
     this.totalExpEarned += expGained;
-
-    // 精英死亡 → 关卡胜利
-    if (args.enemy instanceof EliteGeneral) {
-      this.levels.addExp(expGained);
-      this.showResult(true);
-      return;
-    }
-
-    // 普通怪：先尝试升级，再掉装备（几率）
     const levelUps = this.levels.addExp(expGained);
+    if (soulShardsGained > 0) useGameStore.getState().addSoulShards(soulShardsGained);
+
     if (levelUps.length > 0) {
       const last = levelUps[levelUps.length - 1];
       this.showLevelUp(last);
     }
 
-    // 装备掉落（普通怪 20% / 精英已在关卡胜利处理）
-    if (Math.random() < 0.20) {
+    // 装备掉落（普通怪 20% / 精英 100% 且直接穿）
+    if (args.enemy instanceof EliteGeneral) {
+      const eliteDrop = rollFromPool(COMMON_DROP_POOL);
+      this.spawnDrop(args.x, args.y, eliteDrop.id);
+    } else if (Math.random() < 0.20) {
       const item = rollFromPool(COMMON_DROP_POOL);
       this.spawnDrop(args.x, args.y, item.id);
     }
+
+    // 检查：本区域敌人是否全清？
+    this.checkAreaClear();
     void EQUIPMENT_DB;
   }
 

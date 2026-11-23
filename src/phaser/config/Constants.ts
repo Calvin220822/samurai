@@ -133,3 +133,45 @@ export const EXP_TO_LEVEL = (lv: number) => 100 + (lv - 1) * 150;
 // —— 飘字 ——
 export const DAMAGE_FLOAT_UP = -40;
 export const DAMAGE_FLOAT_DURATION_MS = 600;
+
+// —— Boss 赤月鬼将（Phase 4）——
+export const BOSS_HP = 1800;
+export const BOSS_SPEED = 80;
+export const BOSS_ATTACK_DAMAGE = 26;
+export const BOSS_RADIUS = 36;
+export const BOSS_PHASE2_HP_RATIO = 0.5;
+export const BOSS_PHASE2_SPEED_BOOST = 1.25;
+export const BOSS_SWIPE_COOLDOWN_MS = 1800;
+export const BOSS_SWIPE_WINDUP_MS = 800;
+export const BOSS_SWIPE_RADIUS = 110;
+export const BOSS_SWIPE_FAN_DEG = 140;
+export const BOSS_SLAM_COOLDOWN_MS = 2600;
+export const BOSS_SLAM_WINDUP_MS = 1000;
+export const BOSS_SLAM_RADIUS = 160;
+export const BOSS_SLAM_DAMAGE = 36;
+export const BOSS_CHARGE_COOLDOWN_MS = 3500;
+export const BOSS_CHARGE_WINDUP_MS = 700;
+export const BOSS_CHARGE_SPEED = 420;
+export const BOSS_CHARGE_DURATION_MS = 700;
+export const BOSS_CHARGE_DAMAGE = 32;
+export const BOSS_GHOSTFIRE_COOLDOWN_MS = 9000;
+export const BOSS_GHOSTFIRE_RADIUS = 160;
+export const BOSS_GHOSTFIRE_DAMAGE = 24;
+export const BOSS_SUMMON_COOLDOWN_MS = 12000;    // Phase 2 召唤小怪
+export const BOSS_EXP = 300;
+
+// —— 据点道场（Phase 4）——
+export const DOJO_BUILDING_DAMAGE_MAX = 300;
+export const DOJO_FACILITY_REPAIR_COST_GOLD = 80;
+export const DOJO_FACILITY_REPAIR_COST_WOOD = 20;
+export const DOJO_EXIT_KEY = 'F';                  // 交互键
+
+// —— 关卡区域（Phase 4）——
+export type AreaId = 'village-gate' | 'bamboo-grove' | 'shrine-antechamber' | 'underground-shrine';
+export const AREAS: AreaId[] = ['village-gate', 'bamboo-grove', 'shrine-antechamber', 'underground-shrine'];
+
+// —— 存档（Phase 4）——
+export const SAVE_VERSION = 1;
+export const SAVE_DB_NAME = 'demon-sword-samurai';
+export const SAVE_STORE_NAME = 'save';
+export const SAVE_KEY = 'primary';
