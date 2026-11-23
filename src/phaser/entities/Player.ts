@@ -38,6 +38,8 @@ export class Player extends Phaser.GameObjects.Container {
 
   private invulnUntil = 0;             // 毫秒时间戳，期间免疫伤害
   private hurtFlashUntil = 0;
+  private rChargingUntil = 0;           // Phase 3：鬼神斩蓄力期间禁止移动
+  private rChargingSwordFlashOn = false;
 
   private kbd!: {
     up: Phaser.Input.Keyboard.Key; down: Phaser.Input.Keyboard.Key;
@@ -99,11 +101,13 @@ export class Player extends Phaser.GameObjects.Container {
 
   private drawSword(swinging: boolean): void {
     this.swordGfx.clear();
-    this.swordGfx.lineStyle(3, PLAYER_SWORD_COLOR, 1);
+    const chargeFlash = this.rChargingSwordFlashOn;
+    const color = chargeFlash ? Phaser.Display.Color.ValueToColor(0xff3333).color : PLAYER_SWORD_COLOR;
+    this.swordGfx.lineStyle(chargeFlash ? 5 : 3, color, 1);
     if (swinging) {
       this.swordGfx.lineBetween(0, -4, 36, -24);
       this.swordGfx.lineBetween(0, -4, 36, 4);
-      this.swordGfx.fillStyle(0xffffff, 0.35);
+      this.swordGfx.fillStyle(chargeFlash ? 0xff6666 : 0xffffff, 0.35);
       this.swordGfx.fillTriangle(0, -4, 36, -24, 36, 4);
     } else {
       this.swordGfx.lineBetween(10, 2, 26, 0);
@@ -137,8 +141,9 @@ export class Player extends Phaser.GameObjects.Container {
     if (useGameStore.getState().player.hp <= 0 && this.playerState !== 'DYING') this.die();
   }
 
-  /** Phase 2 新：技能键 Q / E / R 触发三种技能 */
+  /** Phase 3：技能键 Q / W / E / R 触发四种技能 */
   private handleSkills(): void {
+    const now = this.scene.time.now;
     if (Phaser.Input.Keyboard.JustDown(this.kbd.skillQ)) {
       this.skills.castQ(this);
       if (this.playerState === 'ATTACKING') this.playerState = 'MOVING';
@@ -149,7 +154,15 @@ export class Player extends Phaser.GameObjects.Container {
     if (Phaser.Input.Keyboard.JustDown(this.kbd.skillE)) {
       const mv = this.currentMoveDirection();
       this.skills.castE(this, mv);
-      this.invulnUntil = this.scene.time.now + SKILL_E_INVULN_MS;
+      this.invulnUntil = now + SKILL_E_INVULN_MS;
+    }
+    if (Phaser.Input.Keyboard.JustDown((this.kbd as any).skillR)) {
+      const castMs = 600;
+      this.skills.castR(this);
+      this.rChargingUntil = now + castMs;
+      this.rChargingSwordFlashOn = true;
+      this.scene.events.emit('skill:r-charge', { x: this.x, y: this.y });
+      this.scene.time.delayedCall(castMs, () => { this.rChargingSwordFlashOn = false; });
     }
   }
 
@@ -198,6 +211,12 @@ export class Player extends Phaser.GameObjects.Container {
   }
 
   private doMoving(): void {
+    // Phase 3：鬼神斩蓄力期间禁止移动
+    if (this.scene.time.now < this.rChargingUntil) {
+      (this.body as Phaser.Physics.Arcade.Body).setVelocity(0, 0);
+      this.playerState = 'IDLE';
+      return;
+    }
     const mv = this.currentMoveDirection();
     (this.body as Phaser.Physics.Arcade.Body).setVelocity(mv.dx * PLAYER_SPEED, mv.dy * PLAYER_SPEED);
     if (mv.dx < 0) this.face('left');

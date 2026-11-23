@@ -54,6 +54,20 @@ export const SKILL_E_COOLDOWN_MS = 6000;
 export const SKILL_E_DISTANCE = 160;
 export const SKILL_E_INVULN_MS = 200;              // 规避时间
 
+// —— R 鬼神斩（Phase 3）——
+export const SKILL_R_COOLDOWN_MS = 30000;
+export const SKILL_R_CAST_MS = 600;                // 蓄力期间不可移动
+export const SKILL_R_FAN_RADIUS = 144;              // 约 4.5 格
+export const SKILL_R_FAN_ANGLE_DEG = 120;           // 120° 大扇形
+export const SKILL_R_DAMAGE = 200;                  // 4× ATK
+
+// —— 精英鬼将 Phase 3 两阶段 ——
+export const ELITE_PHASE2_HP_RATIO = 0.6;           // HP<60% 变二阶段
+export const ELITE_PHASE2_SPEED_BOOST = 1.3;        // 速度 ×1.3
+export const ELITE_GHOSTFIRE_COOLDOWN_MS = 8000;    // 鬼火爆发 CD
+export const ELITE_GHOSTFIRE_RADIUS = 128;
+export const ELITE_GHOSTFIRE_DAMAGE = 30;
+
 // —— 赤鬼（Phase 1）——
 export const ONI_HP = 120;
 export const ONI_SPEED = 85;

@@ -4,6 +4,7 @@ import {
   PLAYER_ATTACK_DAMAGE, PLAYER_ATTACK_RANGE,
   SKILL_Q_DASH_DISTANCE, SKILL_Q_WIDTH,
   SKILL_W_RADIUS, SKILL_W_DAMAGE,
+  SKILL_R_FAN_RADIUS,
   DAMAGE_FLOAT_UP, DAMAGE_FLOAT_DURATION_MS,
   ONI_EXP, BONE_EXP, WRAITH_EXP, ELITE_EXP,
 } from '../config/Constants.js';
@@ -15,8 +16,10 @@ import { Wraith } from '../entities/enemies/Wraith.js';
 import { EliteGeneral } from '../entities/enemies/EliteGeneral.js';
 import { SkillSystem } from '../systems/SkillSystem.js';
 import { LevelSystem } from '../systems/LevelSystem.js';
+import { soulSystem } from '../systems/SoulSystem.js';
 import { applyEquipmentStatDelta, useGameStore } from '@/store/gameStore.js';
 import { EQUIPMENT_DB, COMMON_DROP_POOL, rollFromPool, RARITY_COLOR } from '@/phaser/data/equipment.js';
+import { SOUL_DB } from '@/phaser/data/souls.js';
 
 /**
  * 战斗场景 Phase 2 版本。
@@ -72,12 +75,17 @@ export class BattleScene extends Phaser.Scene {
     this.events.on('skill:q-start', this.onSkillQStart, this);
     this.events.on('skill:w-start', this.onSkillWStart, this);
     this.events.on('skill:e-start', this.onSkillEStart, this);
+    this.events.on('skill:r-charge', this.onSkillRCharge, this);
+    this.events.on('skill:r-start', this.onSkillRStart, this);
     this.events.on('enemy:attack', this.onEnemyAttack, this);
     this.events.on('enemy:dead', this.onEnemyDead, this);
     this.events.on('elite:summon', this.onEliteSummon, this);
+    this.events.on('elite:ghostfire', this.onEliteGhostfire, this);
+    this.events.on('elite:phase2-enter', this.onElitePhase2Enter, this);
 
     this.input.on('pointerdown', this.onResultPanelClick, this);
     this.input.on('pointerdown', this.onDropClick, this);
+    this.input.keyboard?.on('keydown-ESC', this.toggleInventoryModal, this);
   }
 
   shutdown(): void {
@@ -85,11 +93,16 @@ export class BattleScene extends Phaser.Scene {
     this.events.off('skill:q-start', this.onSkillQStart, this);
     this.events.off('skill:w-start', this.onSkillWStart, this);
     this.events.off('skill:e-start', this.onSkillEStart, this);
+    this.events.off('skill:r-charge', this.onSkillRCharge, this);
+    this.events.off('skill:r-start', this.onSkillRStart, this);
     this.events.off('enemy:attack', this.onEnemyAttack, this);
     this.events.off('enemy:dead', this.onEnemyDead, this);
     this.events.off('elite:summon', this.onEliteSummon, this);
+    this.events.off('elite:ghostfire', this.onEliteGhostfire, this);
+    this.events.off('elite:phase2-enter', this.onElitePhase2Enter, this);
     this.input.off('pointerdown', this.onResultPanelClick, this);
     this.input.off('pointerdown', this.onDropClick, this);
+    this.input.keyboard?.off('keydown-ESC', this.toggleInventoryModal, this);
   }
 
   update(time: number, deltaMs: number): void {
@@ -167,8 +180,11 @@ export class BattleScene extends Phaser.Scene {
       }
     }
     if (target) {
-      target.takeDamage(args.damage || PLAYER_ATTACK_DAMAGE);
-      this.showDamageFloat(target.x, target.y - 20, args.damage || PLAYER_ATTACK_DAMAGE, false);
+      const dmg = args.damage || PLAYER_ATTACK_DAMAGE;
+      target.takeDamage(dmg);
+      this.showDamageFloat(target.x, target.y - 20, dmg, false);
+      // Phase 3：酒吞童子妖魂 — 普攻命中触发吸血（BattleScene 已有 maybeLifestealFromNormalAttack）
+      this.maybeLifestealFromNormalAttack(dmg);
     }
     void args.x; void args.y;
   }
@@ -538,5 +554,186 @@ export class BattleScene extends Phaser.Scene {
       this.projectiles.splice(idx, 1);
     }
     void PLAYER_ATTACK_RANGE;
+  }
+
+  // ——————————————— Phase 3：鬼神斩 R + 精英两阶段 + 妖魂吸血 ———————————————
+
+  private onSkillRCharge(args: { x: number; y: number }): void {
+    // 蓄力特效：红色圆环 + 慢慢收紧
+    const g = this.add.graphics();
+    g.lineStyle(3, 0xff4444, 0.9);
+    g.strokeCircle(args.x, args.y, 20);
+    this.tweens.add({
+      targets: this.tweens.addCounter({ from: 20, to: SKILL_R_FAN_RADIUS * 0.6, duration: 600 }),
+      onUpdate: (t: Phaser.Tweens.Tween) => {
+        g.clear();
+        g.lineStyle(3, 0xff4444, 0.9 - (t.getValue() as number) / 200);
+        g.strokeCircle(args.x, args.y, t.getValue() as number);
+      },
+      onComplete: () => g.destroy(),
+    });
+  }
+
+  private onSkillRStart(args: {
+    x: number; y: number; dx: number;
+    fanRadius: number; fanAngleDeg: number; damage: number;
+  }): void {
+    const facingRight = args.dx > 0;
+    const baseAngle = facingRight ? 0 : 180;  // facing right = 0°, left = 180°
+    const half = args.fanAngleDeg / 2;
+
+    // 扇形视觉（Graphics + 半透明填充 + 边缘描边，180ms 后淡出）
+    const fan = this.add.graphics();
+    fan.fillStyle(0xff4444, 0.35);
+    fan.slice(args.x, args.y, args.fanRadius, baseAngle - half, baseAngle + half);
+    fan.fillPath();
+    fan.lineStyle(4, 0xff6666, 1);
+    fan.strokePath();
+    this.tweens.add({
+      targets: fan, alpha: 0, duration: 180, ease: 'Cubic.Out', onComplete: () => fan.destroy(),
+    });
+
+    // 扇形范围判定（简化：距离 + 角度）
+    let hitCount = 0;
+    for (const e of this.enemies) {
+      if (e.isDead()) continue;
+      const dx = e.x - args.x;
+      const dy = e.y - args.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist > args.fanRadius) continue;
+      const angDeg = (Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360;
+      const lo = (baseAngle - half + 360) % 360;
+      const hi = (baseAngle + half + 360) % 360;
+      let inFan = false;
+      if (lo <= hi) inFan = angDeg >= lo && angDeg <= hi;
+      else inFan = angDeg >= lo || angDeg <= hi;
+      if (inFan) {
+        e.takeDamage(args.damage);
+        this.showDamageFloat(e.x, e.y - 20, args.damage, true);
+        hitCount++;
+      }
+    }
+
+    // 鬼神斩击中至少 1 人时屏幕轻微抖动
+    if (hitCount > 0) this.cameras.main.shake(150, 0.003);
+  }
+
+  private onEliteGhostfire(args: { x: number; y: number; radius: number; damage: number }): void {
+    // 地面红色警示圆（0.5s 后爆炸）
+    const warn = this.add.graphics();
+    warn.fillStyle(0xff4444, 0.35);
+    warn.fillCircle(args.x, args.y, args.radius);
+    warn.lineStyle(3, 0xff8888, 0.9);
+    warn.strokeCircle(args.x, args.y, args.radius);
+
+    this.tweens.add({
+      targets: warn, scaleX: 1.08, scaleY: 1.08, alpha: 0.9, duration: 450, yoyo: true,
+    });
+
+    this.time.delayedCall(500, () => {
+      warn.destroy();
+      // 爆炸视觉
+      const boom = this.add.graphics();
+      boom.fillStyle(0xffaa44, 0.7);
+      boom.fillCircle(args.x, args.y, args.radius);
+      boom.lineStyle(6, 0xffffcc, 1);
+      boom.strokeCircle(args.x, args.y, args.radius);
+      this.tweens.add({
+        targets: boom, alpha: 0, scaleX: 1.3, scaleY: 1.3, duration: 200,
+        onComplete: () => boom.destroy(),
+      });
+
+      // AOE 伤害：只有玩家吃（鬼火是对玩家的）
+      const p = this.player;
+      const d = Phaser.Math.Distance.Between(args.x, args.y, p.x, p.y);
+      if (d <= args.radius + 14) {
+        const hit = p.takeHit(args.damage, this.time.now);
+        if (hit) {
+          this.showDamageFloat(p.x, p.y - 20, args.damage, false);
+          if (useGameStore.getState().player.hp <= 0) this.showResult(false);
+        }
+      }
+    });
+  }
+
+  private onElitePhase2Enter(): void {
+    // 屏幕中央提示 1.5s
+    const txt = this.add.text(GAME_WIDTH / 2, 200,
+      '精英鬼将进入狂暴状态 —— 红色纹路覆盖，速度暴增！',
+      { fontFamily: 'monospace', fontSize: '24px', color: '#ff4444', fontStyle: 'bold', align: 'center' },
+    ).setOrigin(0.5).setDepth(200).setScrollFactor(0);
+    this.tweens.add({
+      targets: txt, alpha: 0, y: 160, duration: 1500, ease: 'Cubic.Out', onComplete: () => txt.destroy(),
+    });
+  }
+
+  /** Phase 3：普攻命中后触发酒吞童子妖魂吸血 */
+  private maybeLifestealFromNormalAttack(damage: number): void {
+    const heal = soulSystem.tryNormalAttackLifesteal(damage);
+    if (heal > 0) {
+      const { player } = useGameStore.getState();
+      const newHp = Math.min(player.maxHp, player.hp + heal);
+      useGameStore.getState().setPlayerHp(newHp);
+      // 显示绿色吸血飘字
+      this.showDamageFloat(this.player.x, this.player.y - 36, heal, false);
+      // 把飘字颜色改为绿色
+      const ft = this.children.list.filter((c) => c instanceof Phaser.GameObjects.Text).slice(-1)[0] as Phaser.GameObjects.Text | undefined;
+      if (ft) (ft as Phaser.GameObjects.Text).setColor('#66ff88');
+    }
+    void SOUL_DB;
+  }
+
+  /** Phase 3：Esc 开关背包面板（模态层 + 暂停游戏循环） */
+  private modalOpen = false;
+  private modalPanel!: Phaser.GameObjects.Container;
+
+  private toggleInventoryModal(): void {
+    if (this.modalOpen) this.closeInventoryModal(); else this.openInventoryModal();
+  }
+
+  private openInventoryModal(): void {
+    this.modalOpen = true;
+    this.game.pause();  // 世界层暂停，技能冷却停止
+    useGameStore.getState().setPaused(true);
+
+    const dim = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.55)
+      .setDepth(300).setScrollFactor(0);
+    const panel = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 720, 480, 0x1a1a22, 1)
+      .setStrokeStyle(2, 0x555560, 1).setDepth(301).setScrollFactor(0);
+    const title = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 210, '背包 / 角色面板（Esc 关闭）', {
+      fontFamily: 'monospace', fontSize: '22px', color: '#e5e5e5', fontStyle: 'bold',
+    }).setOrigin(0.5).setDepth(302).setScrollFactor(0);
+
+    // —— 左侧：属性 ——
+    const s = useGameStore.getState();
+    const soulNames = s.souls.map((id) => SOUL_DB[id]?.name ?? '—').join(' | ') || '（未装备）';
+    const equipNames = Object.entries(s.equipment)
+      .map(([k, v]) => `${k}: ${v ? EQUIPMENT_DB[v]?.name : '—'}`)
+      .join('\n');
+    const attrs = this.add.text(GAME_WIDTH / 2 - 280, GAME_HEIGHT / 2 - 150,
+      `HP: ${s.player.hp} / ${s.player.maxHp}   Lv.${s.player.level}   技能点: ${s.player.skillPoints}\n` +
+      `ATK: ${s.getEffectiveAtk()}   DEF: ${s.getEffectiveDef()}\n` +
+      `金币: ${s.resources.gold}\n\n` +
+      `—— 装备 ——\n${equipNames}\n\n` +
+      `—— 妖魂 ——\n${soulNames}\n\n` +
+      `装备掉落：战斗中点击带颜色框的方形\n` +
+      `妖魂掉落：Phase 3.5 补齐（目前手动装备可调用 store.equipItem）`,
+      { fontFamily: 'monospace', fontSize: '14px', color: '#9aa0a6', lineSpacing: 4 },
+    ).setDepth(302).setScrollFactor(0);
+
+    const info = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 200,
+      `天狗：旋风斩 W 范围 +50%\n酒吞童子：普攻 15% 概率吸血\n镰鼬：影步 E 无敌 +100ms`,
+      { fontFamily: 'monospace', fontSize: '12px', color: '#ffcc33', align: 'center' },
+    ).setOrigin(0.5).setDepth(302).setScrollFactor(0);
+
+    this.modalPanel = this.add.container(0, 0, [dim, panel, title, attrs, info]);
+  }
+
+  private closeInventoryModal(): void {
+    if (!this.modalOpen) return;
+    this.modalOpen = false;
+    this.game.resume();
+    useGameStore.getState().setPaused(false);
+    this.modalPanel.destroy();
   }
 }

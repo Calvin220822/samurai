@@ -41,11 +41,13 @@ interface GameStoreState {
   player: PlayerState;
   resources: ResourceState;
   equipment: EquipmentSlots;
+  souls: string[];               // 3 槽位妖魂，Phase 3
 
   // —— Actions ——
   setScene: (scene: SceneKey | null) => void;
   setPaused: (paused: boolean) => void;
   togglePause: () => void;
+  setPlayerHp: (hp: number) => void;
   damagePlayer: (amount: number) => void;
   addGold: (amount: number) => void;
   addExp: (amount: number) => void;
@@ -77,11 +79,13 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
   player: { ...initPlayer },
   resources: { gold: 0, wood: 0, iron: 0, soulShards: 0 },
   equipment: { ...initEquipment },
+  souls: [],  // Phase 3: 3 槽位妖魂，初始空
 
   setScene: (scene) => set({ currentScene: scene }),
   setPaused: (paused) => set({ isPaused: paused }),
   togglePause: () => set((s) => ({ isPaused: !s.isPaused })),
-
+  setPlayerHp: (hp) =>
+    set((s) => ({ player: { ...s.player, hp: Math.max(0, Math.min(hp, s.player.maxHp)) } })),
   damagePlayer: (amount) =>
     set((s) => ({
       player: { ...s.player, hp: Math.max(0, s.player.hp - amount) },
